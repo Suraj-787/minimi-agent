@@ -42,18 +42,41 @@ export function textModel(parts: string[]): MockLanguageModelV4 {
   });
 }
 
-/** Rejects the call, like a provider returning an HTTP error. */
-export function failingModel(statusCode: number): MockLanguageModelV4 {
+/**
+ * The small model for background extraction: answers each doGenerate with `reply` as JSON text
+ * (a function gets the call index). Pass a string to return raw, possibly malformed, text.
+ */
+export function objectModel(reply: unknown | ((i: number) => unknown)): MockLanguageModelV4 {
+  let i = 0;
   return new MockLanguageModelV4({
-    doStream: async () => {
-      throw new APICallError({
-        message: "secret-key-AIzaSyFAKE leaked in provider message",
-        url: "https://example.test",
-        requestBodyValues: {},
-        statusCode,
-      });
+    doGenerate: async () => {
+      const value = typeof reply === "function" ? (reply as (i: number) => unknown)(i++) : reply;
+      return {
+        content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value) }],
+        finishReason: { unified: "stop", raw: undefined },
+        usage,
+        warnings: [],
+      };
     },
   });
+}
+
+/** Extraction that has nothing to store; the default small model for tests that don't look at memory. */
+export const emptyExtraction = { summary: "", claims: [] };
+
+/** Rejects the call, like a provider returning an HTTP error. */
+export function failingModel(statusCode: number): MockLanguageModelV4 {
+  const fail = async (): Promise<never> => {
+    throw new APICallError({
+      message: "secret-key-AIzaSyFAKE leaked in provider message",
+      url: "https://example.test",
+      requestBodyValues: {},
+      statusCode,
+      // Not retryable, so the background extractor's SDK retries don't slow the test down.
+      isRetryable: false,
+    });
+  };
+  return new MockLanguageModelV4({ doStream: fail, doGenerate: fail });
 }
 
 /** Emits `before`, then waits for release(), then emits `after`. Lets a test act mid-stream. */

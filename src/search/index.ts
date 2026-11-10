@@ -19,6 +19,8 @@ export const MAX_RESULTS_PER_CALL = 8;
 const TTL_SHORT_MS = 60 * 60 * 1000;
 const TTL_LONG_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = 6000;
+/** `fresh` makes Exa live-crawl pages, which routinely takes longer than 6 s (D40). */
+const DEFAULT_FRESH_TIMEOUT_MS = 15_000;
 
 export interface SearchInput {
   queries: string[];
@@ -51,7 +53,8 @@ export function createTurnCounter(): TurnCounter {
 }
 
 export interface SearchOutcome {
-  results: Array<SearchResult & { isNew: boolean }>;
+  /** `query`: the query that first found the result, so verify mode can date it against that item's claim (D41). */
+  results: Array<SearchResult & { isNew: boolean; query: string }>;
   /** Provider that answered each query (or "cache:<provider>"), for the trace. */
   sources: Array<{ query: string; provider: ProviderName; cached: boolean }>;
   /** Queries no provider could answer. */
@@ -113,8 +116,8 @@ export function ttlMs(q: { query: string; since?: string }): number {
  * Merges per-query result lists into at most `cap` unique results. Round-robin, so one chatty query
  * can't crowd the others out of the cap; first occurrence of a URL wins.
  */
-export function mergeResults(lists: RawResult[][], cap = MAX_RESULTS_PER_CALL): RawResult[] {
-  const out: RawResult[] = [];
+export function mergeResults<T extends RawResult>(lists: T[][], cap = MAX_RESULTS_PER_CALL): T[] {
+  const out: T[] = [];
   const seen = new Set<string>();
   const longest = Math.max(0, ...lists.map((l) => l.length));
   for (let i = 0; i < longest && out.length < cap; i++) {
@@ -131,6 +134,30 @@ export function mergeResults(lists: RawResult[][], cap = MAX_RESULTS_PER_CALL): 
   return out;
 }
 
+export interface SearchJob {
+  query: string;
+  domains?: string[];
+  /** How the job appears in the trace and in "no results for" notes. */
+  label: string;
+}
+
+/** Suffix on the label of the extra query that runs without the domain filter. */
+export const UNRESTRICTED_LABEL = " (any site)";
+
+/**
+ * One job per unique query. With `domains`, the first query also runs once with no domain filter
+ * (D33): a domain list (often taken from a recalled claim's source) is a hint, and a pricing change
+ * or a launch is often reported first somewhere else.
+ */
+export function planJobs(input: SearchInput): SearchJob[] {
+  const queries = [...new Set(input.queries.map((q) => q.trim()).filter(Boolean))];
+  const domains = input.domains && input.domains.length > 0 ? input.domains : undefined;
+  const jobs: SearchJob[] = queries.map((query) => ({ query, ...(domains ? { domains } : {}), label: query }));
+  const first = queries[0];
+  if (domains && first) jobs.push({ query: first, label: `${first}${UNRESTRICTED_LABEL}` });
+  return jobs;
+}
+
 // ---- search --------------------------------------------------------------------------------
 
 const cachedResults = z.array(rawResultSchema);
@@ -142,11 +169,14 @@ export interface SearchDeps {
   now: () => Date;
   /** Per provider attempt. */
   timeoutMs?: number;
+  /** Per provider attempt when the query is `fresh` (live crawl). */
+  freshTimeoutMs?: number;
 }
 
 export function createSearch(deps: SearchDeps): Search {
   const { db, providers, now } = deps;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const freshTimeoutMs = deps.freshTimeoutMs ?? DEFAULT_FRESH_TIMEOUT_MS;
 
   const readCache = (key: string): RawResult[] | undefined => {
     const row = db
@@ -185,9 +215,8 @@ export function createSearch(deps: SearchDeps): Search {
         if (hit) return { results: hit, provider: provider.name, cached: true };
       }
       try {
-        const signal = outer
-          ? AbortSignal.any([outer, AbortSignal.timeout(timeoutMs)])
-          : AbortSignal.timeout(timeoutMs);
+        const limit = q.fresh ? freshTimeoutMs : timeoutMs;
+        const signal = outer ? AbortSignal.any([outer, AbortSignal.timeout(limit)]) : AbortSignal.timeout(limit);
         const results = await provider.search(q, signal);
         // `fresh` results are still worth storing for non-fresh callers, but never read back for fresh ones.
         if (results.length > 0) writeCache(key, provider.name, results, ttl);
@@ -202,39 +231,40 @@ export function createSearch(deps: SearchDeps): Search {
 
   return {
     async run(input, turn, signal) {
-      const queries = [...new Set(input.queries.map((q) => q.trim()).filter(Boolean))];
+      const jobs = planJobs(input);
       const settled = await Promise.all(
-        queries.map((query) =>
+        jobs.map((job) =>
           runQuery(
             {
-              query,
+              query: job.query,
               since: input.since,
-              domains: input.domains,
+              domains: job.domains,
               fresh: input.fresh,
               // `since` shortens the cache TTL (ttlMs) but must not force Tavily's news topic:
               // "CRM pricing changes since Monday" is not necessarily a news-site query.
-              newsLike: isNewsLike(query),
+              newsLike: isNewsLike(job.query),
             },
             signal,
           ),
         ),
       );
 
-      const answered = settled.flatMap((s) => (s ? [s] : []));
-      const failed = queries.filter((_, i) => !settled[i]);
+      const answered = settled.flatMap((s, i) => (s ? [{ ...s, query: jobs[i]?.query ?? "" }] : []));
+      const failed = jobs.filter((_, i) => !settled[i]).map((j) => j.label);
       // Numbered only after merging, in a deterministic order, from THIS turn's counter.
-      const results = mergeResults(answered.map((a) => a.results)).map((r) => ({
+      const tagged = answered.map((a) => a.results.map((r) => ({ ...r, query: a.query })));
+      const results = mergeResults(tagged).map((r) => ({
         ...r,
         ...turn.numberFor(r.url),
       }));
       return {
         results,
-        sources: queries.flatMap((query, i) => {
+        sources: jobs.flatMap((job, i) => {
           const s = settled[i];
-          return s ? [{ query, provider: s.provider, cached: s.cached }] : [];
+          return s ? [{ query: job.label, provider: s.provider, cached: s.cached }] : [];
         }),
         failed,
-        allFailed: queries.length > 0 && answered.length === 0,
+        allFailed: jobs.length > 0 && answered.length === 0,
       };
     },
   };

@@ -216,3 +216,117 @@ numbered `source-url` parts, and claims are dated to the turn and logged in `mem
 `{source:"seed"}`. It does not go through `scan.ts`, because it is trusted fixture data. `--reset` deletes the DB file and its
 WAL side files, so no code path ever runs `DELETE FROM claims`. Without `--reset`, threads whose title exists are skipped.
 `claimKey()` lives in `src/memory/claimKey.ts` now so seeded and live claims share one merge key.
+
+**D28 — The extractor sees the labels of the claims recalled this turn, and returns `source: n` and `asOf`.** An LLM
+rewords "cheapest paid plan price" freely; without the recalled `entity | attribute | value` lines (offered as "reuse
+exactly; copy the value if unchanged") the key misses and SUPERSEDE never fires. These lines are our own ledger data,
+already scanned, so raw page content still never reaches the write path. The model cites a source by its `[n]` rather
+than copying a URL (no typos, nothing to exfiltrate). `asOf` is stored as `valid_as_of` when it is a real date not in the
+future, else the user's local today. The model-facing schema is loose (plain strings, nullable, no length or regex limits,
+because Gemini supports only part of JSON Schema); code validates each claim on its own, so one bad claim never sinks the rest.
+
+**D29 — Every claim needs a source returned this turn.** A recall-only answer ("On 3 Nov I said Neon was $19") restates
+memory; storing it would TOUCH the claim and fake a `last_verified_at`. So an unsourced claim, or one whose `[n]` was not
+returned this turn, is rejected and logged with its reason. Only `complete` replies are remembered (not `partial` or `error`).
+*Rejected:* letting unsourced claims ADD new keys (they would be unchecked model knowledge presented as a dated record).
+
+**D30 — Reconcile refuses older evidence, and compares values loosely but safely.** If a different value arrives with
+`valid_as_of` earlier than the held claim's, it is logged `rejected: "older evidence"` and the held claim stays current:
+newer evidence wins, not the newer turn. Values compare after NFKC, lowercase, whitespace removal and trailing-punctuation
+strip; currency symbols and decimals are kept, so "$19 / month" = "$19/month" but "€19" ≠ "$19" and "1.3" ≠ "13".
+Duplicate keys in one extraction: the last wins. One transaction per turn (summary + rejections + reconcile).
+
+**D31 — Verify mode with claims on record forces a search on step 0.** `prepareStep` returns
+`toolChoice: { type: "tool", toolName: "web_search" }` for the first step when `intent.verify` and at least one claim is
+listed to re-check, then `{}` (auto), and `none` on the last step. The prompt alone was not enough: a model can "verify"
+from memory. Verify with nothing on record is not forced (a regex false positive must not cost a search). The trace's
+intent records `cues` and `forcedSearch`.
+
+**D32 — The R0 window skips turn text, not claims.** Turns inside the window are recalled as claims-only entries
+"(earlier in this chat, shown above)". R1 keeps them so a day isn't misreported as empty. In verify mode R3 adds the
+window's turns that have claims, newest first, so a same-thread "Is that still correct?" has claims to re-check (and
+triggers D31). The trace splits `memoryIds.turns` (recalled with text) from `inThreadTurns`. Claims render one line per
+key across the block: the current value, plus `previously: <old> (said …, until …)` for up to 3 earlier values.
+
+**D33 — A `domains` list is a hint: the search layer pairs it with one unrestricted query.** Verify mode offers the hosts of
+the recalled claims' sources as "a hint, not a limit". `planJobs()` runs every query restricted and the first query once
+more on any site (labelled "(any site)" in the trace), because price changes and launches are often reported off the
+vendor's site first. Done in code, so it never depends on the model making a second call.
+
+**D34 — Evidence dates decide Changed vs "already outdated".** Results show `published YYYY-MM-DD` or `undated`. The static
+verify rules compare that date with the claim's "said" date: after → Changed (since you asked); on or before → the earlier
+figure was already outdated (not a change since); undated → changed, timing unknown. The table has an Evidence date column.
+Recalled memory is cited by date and chat ("from your 3 Nov chat"), never as a claim label; `[n]` is only for search results.
+Covered by prompt tests and eval case A14 (evidence dated 1 Nov against a 3 Nov claim).
+
+**D35 — Scanner: invisible characters first, then NFKC, then patterns.** Zero-width and bidi characters are rejected before
+normalising (NFKC does not remove them). Then full-width look-alikes fold to ASCII ("ｉｇｎｏｒｅ"). Then the pattern list
+runs. Exfiltration needs a verb plus a sensitive object ("forward all conversations"), and secret-requests need a verb
+("print the API keys"), so ordinary claims like "Sends invoices to customers" or "Supports API keys" pass. Links are allowed only
+if they are one of this turn's sources (URL-normalised). A false positive costs one claim; a false negative persists in memory.
+The background extraction uses the SDK's `maxRetries: 2` under one 30 s `AbortSignal`, which caps all attempts together;
+`runAgent().done` now resolves after the memory write, so the CLI and evals can await it while the server never does.
+
+## Phase 4 manual-test fixes
+
+**D36 — A page date is not a change date; statuses say only what the evidence supports.** (Replaces D34's status rules.)
+Manual testing marked Neon "Changed" from a pricing page dated 4 Nov, but its pricing dates from Aug 2025; the date was
+when the page was published or crawled. Code now labels each result `published DATE (before since)` / `(after since)` /
+`undated` whenever the call has `since`, so the model never compares dates itself. The status vocabulary is: Unchanged |
+Differs now (timing unknown) | Changed after DATE (only with a dated announcement, changelog, release note or news item
+published after the claim) | Already outdated when asked (dated evidence on or before the claim's day) | Couldn't verify.
+*Rejected:* inferring change dates from page dates (the bug); dropping dates entirely (Already outdated needs them).
+
+**D37 — Verify coverage and the news pass are enforced in code (`agent/recheck.ts`).** A4 listed five tools, the cap was 4
+queries, and Freshsales went unchecked; "shipped something big?" ran no news search. The cap is now 6. A per-turn tracker
+sees every `web_search` call. It tops up `<entity> <attribute>` queries for items no query mentions (a whole-word
+match on the entity's first word, so "HubSpot pricing" covers "HubSpot Sales Hub"), and `prepareStep` keeps forcing the
+tool while an item is unsearched. When the message has a news cue, one more forced call is rewritten into the news pass:
+`since` (the resolved since date, else the earliest day a listed claim was said), no `domains`, one query per item. App-authored
+notes after the results say what is still owed. The trace's intent stores the tracker's final state. Within `MAX_STEPS = 4`
+that is price pass, news pass, then the answer. *Rejected:* prompt-only rules (they failed in A4); generating every query in
+code (the model writes better queries; code only fills gaps).
+
+**D38 — No ids in `<memory>`.** A recalled-thread answer printed "[memory: 2026-11-03 t_929e45f4]". Turn tags and `(cN)` claim
+labels are gone from the block; turns show their local time, claims are `- entity | attribute | value | …` lines, and the
+verify re-check list names items as "entity — attribute". Ids live only in code and the trace. The static prompt forbids
+bracketed memory references and ids in answers.
+
+**D39 — Ledger values are atomic.** A3 stored Render as "Basic-256mb, ~$6.30/month (or entry managed instance)" and superseded
+"$6/month" while the answer's table said Unchanged. Validation now rejects a value with `~`, `≈`, approx…, roughly, around,
+about, "or" or parentheses (`"hedged value"`, logged). The extractor copies the recalled value verbatim for rows the answer
+marks Unchanged. Rows marked Couldn't verify are **not extracted at all**, rather than copied: a copy would TOUCH the claim and
+record a verification that never happened (the D29 reasoning). Qualifiers belong in the attribute.
+
+**D40 — `fresh` queries get 15 s per provider attempt.** Exa live-crawls pages for `fresh`, which routinely exceeded 6 s in A3
+and A4 and fell back to Tavily. Non-fresh queries keep 6 s. *Rejected for now:* running Exa and Tavily in parallel for fresh
+queries (doubles search quota per verify turn; revisit if 15 s still times out).
+
+## Phase 4 re-check fixes
+
+**D41 — In verify mode, evidence is dated against its own claim, not only against `since`.** A2 had no "since" in the
+message, so results went unlabelled and the model called Bun "Changed after 2026-11-03" on evidence from 2026-08-20.
+Each search result now keeps the query that first found it; the recheck tracker maps that query (else the result's
+title) to the item it was searched for, and the tool labels the date `(on or before the <item> claim date D)` or
+`(after …)`. The claim's own day counts as "on or before": a page dated the day we answered could not have told us
+anything new. The claim date is the local day the shown value was said. With no matching item the `since` label applies.
+
+**D42 — Parentheses are not a hedge.** "Launch plan, Pay-as-you-go ($0.106/CU-hr)" was rejected and Neon stayed at $19.
+The hedge test is now only `~`, `≈`, approx…, roughly, around, about and a standalone "or"; a hedge word inside
+parentheses is still caught by the word itself.
+
+**D43 — The verify table decides what the ledger does.** A2 superseded Render with a reworded value while the table said
+Unchanged. `memory/verifyTable.ts` parses the table and maps each recalled claim to the row naming its entity (best
+attribute-word overlap among several rows). Unchanged → TOUCH by id (when the row cites a source returned this turn), no new
+value. Couldn't verify → no write. Differs now / Changed after / Already outdated → the extractor's value goes through
+reconcile. An extractor claim is held if it has the key of an Unchanged / Couldn't-verify claim, or names an entity whose rows
+are all Unchanged / Couldn't verify (that catches a reworded attribute). Held claims are logged as rejected with the reason.
+No table, an unknown status, or no row naming a claim → the D28–D30 path as before. *Rejected:* trusting the extractor
+alone (it rewords, and the user saw the table, not the extraction).
+
+**D44 — The takeaway must match the table, and code checks it.** A4's closing line said nothing changed under a
+"Differs now" row. The static prompt now requires the takeaway to name every row that isn't Unchanged, adds a
+"Shipped since <date>" list (item, date, [n], or "Nothing found dated after <date>") when the user asks what shipped, and
+allows "introduced/launched" only with a source dated after the claim date. `takeawayGaps()` finds non-Unchanged rows not
+named after the table; they go into the trace as `errors: [{ verifyTakeawayMissing }]` for the debug drawer and evals. The
+answer is never rewritten after streaming.

@@ -60,13 +60,17 @@ with `NOW=2026-11-12T11:00:00+05:30` + seed, `npm run chat` → "What did I ask 
 lists both seeded questions without a search call.
 
 ## Phase 4 — Memory write path + verify mode
-- [ ] `agent/intent.ts` + tests (SPEC §8)
-- [ ] Replace the hardcoded `intent = { verify: false }` in `agent/index.ts` (`TODO(phase4)`) with `detectIntent(message)`, so R3 fires in the app
-- [ ] `memory/extract.ts`: one small-model structured call → summary + claims (SPEC §7.1), input = user msg + final answer + cited URLs only
-- [ ] `memory/scan.ts`: injection / exfiltration scanner (SPEC §15) + tests with nasty strings
-- [ ] `memory/reconcile.ts`: claim key normalisation + ADD / TOUCH / SUPERSEDE (SPEC §7.3), all ops logged to `memory_writes`
-- [ ] Verify-mode prompt section; table format; `fresh` + `domains` used for pricing pages
-- [ ] Recalled claims render current value + `previously:` chain
+- [x] `agent/intent.ts` + tests (SPEC §8)
+- [x] Replace the hardcoded `intent = { verify: false }` in `agent/index.ts` (`TODO(phase4)`) with `detectIntent(message)`, so R3 fires in the app
+- [x] `memory/extract.ts`: one small-model structured call → summary + claims (SPEC §7.1), input = user msg + final answer + cited URLs only (+ recalled claim labels, D28)
+- [x] `memory/scan.ts`: injection / exfiltration scanner (SPEC §15) + tests with nasty strings
+- [x] `memory/reconcile.ts`: claim key normalisation + ADD / TOUCH / SUPERSEDE (SPEC §7.3), all ops logged to `memory_writes`
+- [x] Verify-mode prompt section; table format; `fresh` + `domains` used for pricing pages
+- [x] Recalled claims render current value + `previously:` chain
+- [x] Manual-test fixes (D36–D40): evidence-date labels + status vocabulary, atomic claim values, verify coverage + forced
+  news pass (6-query cap), 15 s timeout for `fresh`, no ids in `<memory>`; DESIGN.md "another week" notes
+- [x] Re-check fixes (D41–D44): evidence dated against each item's claim, verify table drives the ledger, parentheses
+  allowed in values, takeaway/"Shipped since" rules with a trace check
 
 **Done when:** reconcile unit tests cover add / touch / supersede / key normalisation ("Neon " vs "neon",
 "Pro plan price" vs "pro-plan price"); scanner rejects all fixtures in `tests/fixtures/injection.txt` and

@@ -4,7 +4,7 @@ import { SYSTEM_PROMPT } from "../src/agent/prompts";
 import { openDb, type Db } from "../src/db/index";
 import { hasAssistantReplyAfter, listMessages } from "../src/db/repo";
 import type { Search, SearchOutcome } from "../src/search/index";
-import { failingModel, gatedModel, scriptedModel, textModel } from "./helpers/mockModel";
+import { failingModel, gatedModel, scriptedModel, textModel, objectModel, emptyExtraction } from "./helpers/mockModel";
 import { noSearch } from "./helpers/search";
 
 const NOW = new Date("2026-11-12T05:30:00Z");
@@ -13,7 +13,7 @@ let db: Db;
 beforeEach(() => {
   db = openDb(":memory:");
 });
-const deps = (main: AgentDeps["models"]["main"]): AgentDeps => ({ db, models: { main }, now: () => NOW, search: noSearch, maxSteps: 4 });
+const deps = (main: AgentDeps["models"]["main"]): AgentDeps => ({ db, models: { main, small: objectModel(emptyExtraction) }, now: () => NOW, search: noSearch, maxSteps: 4 });
 const input = (message: string) => ({ threadId: TID, message, tz: "Asia/Kolkata" });
 
 async function readAll(stream: ReadableStream<unknown>): Promise<unknown[]> {
@@ -126,7 +126,7 @@ describe("provider failures", () => {
 
 describe("runAgent with web_search", () => {
   const found = (n: number): SearchOutcome => ({
-    results: [{ n, isNew: true, title: `Node ${n}`, url: `https://nodejs.org/${n}`, publishedDate: "2026-11-05", snippet: "LTS" }],
+    results: [{ n, isNew: true, query: "q", title: `Node ${n}`, url: `https://nodejs.org/${n}`, publishedDate: "2026-11-05", snippet: "LTS" }],
     sources: [{ query: "q", provider: "exa", cached: false }],
     failed: [],
     allFailed: false,

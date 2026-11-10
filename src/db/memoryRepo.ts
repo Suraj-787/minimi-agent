@@ -139,7 +139,7 @@ export function insertClaim(db: Db, c: NewClaim): ClaimRow {
     c.validAsOf ?? null,
     observed,
   );
-  return db.prepare("SELECT * FROM claims WHERE id = ?").get(id) as ClaimRow;
+  return getClaim(db, id) as ClaimRow;
 }
 
 /**
@@ -155,6 +155,44 @@ export function claimsForTurns(db: Db, turnIds: readonly string[]): ClaimRow[] {
        ORDER BY turn_id, CASE status WHEN 'current' THEN 0 ELSE 1 END, observed_at, rowid`,
     )
     .all(...turnIds) as ClaimRow[];
+}
+
+/** Current claims for one merge key, newest first. Normally zero or one. */
+export function currentClaimsByKey(db: Db, key: string): ClaimRow[] {
+  return db
+    .prepare(`SELECT * FROM claims WHERE key = ? AND status = 'current' ORDER BY observed_at DESC, rowid DESC`)
+    .all(key) as ClaimRow[];
+}
+
+/** TOUCH: the same value was seen again in a sourced answer. Only the verification date moves. */
+export function touchClaim(db: Db, id: string, verifiedAt: Date): void {
+  db.prepare(`UPDATE claims SET last_verified_at = ? WHERE id = ?`).run(verifiedAt.toISOString(), id);
+}
+
+/** SUPERSEDE: the old row keeps its value and gains a pointer to its replacement (rule 10: never overwritten). */
+export function markSuperseded(db: Db, id: string, by: string, at: Date): void {
+  db.prepare(`UPDATE claims SET status = 'superseded', superseded_by = ?, superseded_at = ? WHERE id = ?`).run(
+    by,
+    at.toISOString(),
+    id,
+  );
+}
+
+/** Every non-forgotten claim for these keys, oldest first: the value history behind "previously: …". */
+export function claimHistory(db: Db, keys: readonly string[]): Map<string, ClaimRow[]> {
+  const out = new Map<string, ClaimRow[]>();
+  if (keys.length === 0) return out;
+  const unique = [...new Set(keys)];
+  const marks = unique.map(() => "?").join(",");
+  const rows = db
+    .prepare(`SELECT * FROM claims WHERE key IN (${marks}) AND status != 'forgotten' ORDER BY observed_at, rowid`)
+    .all(...unique) as ClaimRow[];
+  for (const r of rows) out.set(r.key, [...(out.get(r.key) ?? []), r]);
+  return out;
+}
+
+export function getClaim(db: Db, id: string): ClaimRow | undefined {
+  return db.prepare("SELECT * FROM claims WHERE id = ?").get(id) as ClaimRow | undefined;
 }
 
 // ── memory_writes ────────────────────────────────────────────────────────
@@ -175,6 +213,21 @@ export function insertMemoryWrite(
     w.detail === undefined ? null : JSON.stringify(w.detail),
     w.createdAt.toISOString(),
   );
+}
+
+export interface MemoryWriteRow {
+  id: string;
+  turn_id: string | null;
+  op: MemoryOp;
+  claim_id: string | null;
+  detail_json: string | null;
+  created_at: string;
+}
+
+export function memoryWritesForTurn(db: Db, turnId: string): MemoryWriteRow[] {
+  return db
+    .prepare("SELECT * FROM memory_writes WHERE turn_id = ? ORDER BY created_at, rowid")
+    .all(turnId) as MemoryWriteRow[];
 }
 
 // ── traces ───────────────────────────────────────────────────────────────
@@ -226,6 +279,7 @@ export interface TraceRow {
   memory_ids_json: string | null;
   memory_chars: number | null;
   context_ms: number | null;
+  errors_json: string | null;
 }
 
 export function getTrace(db: Db, turnId: string): TraceRow | undefined {

@@ -17,8 +17,10 @@ Every message goes through three stages:
    (`entity · attribute · value · source · date`) into a **dated answer ledger**. Claims merge by key:
    same value → mark it re-verified; new value → the old claim is *superseded*, not overwritten, so history survives.
 
-"Is your answer still correct?" then becomes a defined process: load the old claims → re-check each
-one with date-filtered, fresh searches → report Changed / Unchanged / Couldn't verify, with citations.
+"Is your answer still correct?" then becomes a defined process: load the old claims → search every one
+(coverage enforced in code, plus a dated news pass when the user asks what shipped) → report Unchanged /
+Differs now (timing unknown) / Changed after DATE / Already outdated when asked / Couldn't verify, with
+citations. A page date alone never counts as a change.
 
 ## Why this way
 - The test prompts are about **memory and time**, not just search. Dates are resolved in code
@@ -51,3 +53,11 @@ _TODO: eval pass rate, median time to first token, typical searches per turn —
 - Embedding recall for vague references ("that database thing").
 - Conversation summaries for long threads; per-claim expiry by type (prices fast, specs slow).
 - Larger eval set built from real conversations; regression checks in CI.
+- **Separate `observed_at` from `effective_from` on claims.** Today a claim knows when we said it and the date of the
+  page we saw, but not when the value actually took effect. A pricing page dated 4 Nov showing usage-based pricing that
+  launched in Aug 2025 looks like a change since 3 Nov. An `effective_from` date (from changelogs or announcements) would
+  let verify mode and reconcile tell "changed since you asked" apart from "was already different".
+- **The older-evidence guard can leave a known-stale claim current.** When re-checking finds dated evidence from *before*
+  the held claim that contradicts it (Bun: a 22 Oct release note against our 3 Nov "1.3"), reconcile rejects it as
+  "older evidence", so the wrong value stays `current` even though the answer correctly says it was already outdated.
+  With `effective_from`, such a claim could be marked `disputed` (or superseded with the correct effective date) rather than kept.

@@ -7,6 +7,9 @@ import {
   toUIMessageStream,
   type ModelMessage,
   type UIMessageChunk,
+  type UIMessagePart,
+  type UIDataTypes,
+  type UITools,
 } from "ai";
 import type { Db } from "../db/index";
 import {
@@ -19,9 +22,13 @@ import {
 } from "../db/repo";
 import { errorFields, log } from "../lib/log";
 import { insertTrace } from "../db/memoryRepo";
+import { parseVerifyTable, takeawayGaps } from "../memory/verifyTable";
+import { writeTurnMemory } from "../memory/write";
 import { createTurnCounter, type Search } from "../search/index";
 import { buildContext, type BuiltContext } from "./context";
 import { friendlyError } from "./errors";
+import { detectIntent } from "./intent";
+import { createRecheckTracker } from "./recheck";
 import { HISTORY_MAX_MESSAGES, selectHistory, toHistoryMessages } from "./history";
 import type { Models } from "./model";
 import { SYSTEM_PROMPT, buildDynamicBlock, withDynamicBlock } from "./prompts";
@@ -33,7 +40,8 @@ import { createWebSearchTool, type ToolEmit } from "./tools/webSearch";
 // each build their own deps and reuse this function unchanged.
 export interface AgentDeps {
   db: Db;
-  models: Pick<Models, "main">;
+  /** main: the chat. small: the background memory write (SPEC §7.1). */
+  models: Models;
   search: Search;
   /** Model steps per turn (env MAX_STEPS). The last one is forced to answer in text. */
   maxSteps: number;
@@ -51,7 +59,7 @@ export interface AgentInput {
 export interface AgentRun {
   /** UI message stream for the client. Cancelling it does NOT stop generation or persistence. */
   stream: ReadableStream<UIMessageChunk>;
-  /** Resolves after the assistant row (and, from Phase 4, background memory work) is written. Never rejects. */
+  /** Resolves after the assistant row, the trace and the background memory write are done. Never rejects. */
   done: Promise<void>;
   userMessageId: string;
   assistantMessageId: string;
@@ -86,9 +94,18 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
   const window = selectHistory(recentMessages(db, threadId, HISTORY_MAX_MESSAGES + 4));
   const history = toHistoryMessages(window);
   const at = now();
-  // TODO(phase4): replace with detectIntent(message) from agent/intent.ts.
-  const intent: RecallIntent = { verify: false };
-  const ctx = contextOrFallback(deps, { message, tz, at, intent, windowSeqs: new Set(window.map((r) => r.seq)) });
+  const intent = detectIntent(message);
+  const ctx = contextOrFallback(deps, {
+    message,
+    tz,
+    at,
+    intent: { verify: intent.verify },
+    windowSeqs: new Set(window.map((r) => r.seq)),
+  });
+  // Verify mode with claims on record must not depend on the model choosing to search (D31), and every
+  // listed item must be searched, plus a dated news pass when the user asks what shipped (D37).
+  const forceSearch = intent.verify && ctx.built.recheck.claims.length > 0;
+  const recheck = forceSearch ? createRecheckTracker(recheckInput(ctx.built, intent.news)) : undefined;
   const messages: ModelMessage[] = history.map((m, i) => ({
     role: m.role,
     content: i === history.length - 1 ? withDynamicBlock(ctx.built.block, m.text) : m.text,
@@ -105,7 +122,10 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
     });
     return persisted;
   };
-  const writeAssistant = (text: string, status: MessageStatus, partsJson: string | null): void => {
+  // What the memory write needs once the reply is saved: only complete answers are remembered.
+  let finished: { text: string; status: MessageStatus; parts: readonly Part[] } | undefined;
+  const writeAssistant = (text: string, status: MessageStatus, partsJson: string | null, parts: readonly Part[] = []): void => {
+    finished = { text, status, parts };
     insertMessage(db, {
       id: assistantId,
       threadId,
@@ -142,10 +162,20 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
         model: models.main,
         instructions: SYSTEM_PROMPT,
         messages,
-        tools: { web_search: createWebSearchTool({ search, turn: createTurnCounter(), emit }) },
+        tools: {
+          web_search: createWebSearchTool({ search, turn: createTurnCounter(), emit, ...(recheck ? { recheck } : {}) }),
+        },
         stopWhen: isStepCount(maxSteps),
         // On the last allowed step the model may not call the tool, so the turn always ends in text.
-        prepareStep: ({ stepNumber }) => (stepNumber >= maxSteps - 1 ? { toolChoice: "none" } : {}),
+        // In verify mode the first step must search, and so must every later one while an item is still
+        // unsearched or the news pass is owed; then back to auto.
+        prepareStep: ({ stepNumber }) => {
+          if (stepNumber >= maxSteps - 1) return { toolChoice: "none" };
+          if (recheck && (stepNumber === 0 || recheck.needsSearch())) {
+            return { toolChoice: { type: "tool", toolName: "web_search" } };
+          }
+          return {};
+        },
         // Retries with a user-visible status arrive in Phase 5 (lib/retry.ts); no hidden SDK retries until then.
         maxRetries: 0,
         onError: ({ error }) => log.error("model stream error", { threadId, ...errorFields(error) }),
@@ -170,20 +200,25 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
           const note = `⚠️ ${friendlyError(outcome.error)}`;
           writeAssistant(text ? `${text}\n\n${note}` : note, "error", null);
         } else if (isAborted || isCancelled || outcome.status === "aborted") {
-          writeAssistant(text, "partial", JSON.stringify(responseMessage.parts));
+          writeAssistant(text, "partial", JSON.stringify(responseMessage.parts), responseMessage.parts);
         } else {
-          writeAssistant(text, "complete", JSON.stringify(responseMessage.parts));
+          writeAssistant(text, "complete", JSON.stringify(responseMessage.parts), responseMessage.parts);
         }
       }),
   });
 
   // Tracing runs after the reply is saved and never affects it (rule 5).
   const writeTrace = (): void => {
+    const errors: unknown[] = ctx.error ? [ctx.error] : [];
+    // A takeaway that skips a non-Unchanged row contradicts its own table (D44); recorded, never "fixed" after the fact.
+    const table = intent.verify && finished?.status === "complete" ? parseVerifyTable(finished.text) : undefined;
+    const gaps = table ? takeawayGaps(table) : [];
+    if (gaps.length > 0) errors.push({ verifyTakeawayMissing: gaps });
     try {
       insertTrace(db, {
         turnId: assistantId,
         threadId,
-        intent,
+        intent: { ...intent, forcedSearch: forceSearch, ...(recheck ? { recheck: recheck.state() } : {}) },
         resolvedDates: {
           refs: ctx.built.trace.refs,
           resolved: ctx.built.trace.resolvedDates,
@@ -194,7 +229,7 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
         memoryIds: { ...ctx.built.trace.memoryIds, omittedTurns: ctx.built.trace.omittedTurns },
         memoryChars: ctx.built.trace.memoryChars,
         contextMs: ctx.ms,
-        ...(ctx.error ? { errors: [ctx.error] } : {}),
+        ...(errors.length > 0 ? { errors } : {}),
         createdAt: now(),
       });
     } catch (err) {
@@ -204,16 +239,61 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
 
   // 4. Two readers. The client gets one branch; we drain the other ourselves. If the browser
   //    disconnects mid-answer, the model keeps streaming into our branch and the full reply is saved.
+  // Background memory (rule 5): after the reply and trace are saved; writeTurnMemory never throws.
+  const writeMemory = async (): Promise<void> => {
+    if (finished?.status !== "complete" || !finished.text.trim()) return;
+    await writeTurnMemory(
+      { db, model: models.small, now },
+      {
+        turnId: assistantId,
+        threadId,
+        tz,
+        localDate: userRow.local_date,
+        userText: message,
+        answerText: finished.text,
+        sources: sourcesOf(finished.parts),
+        knownClaims: ctx.built.recheck.claims,
+        verify: intent.verify,
+      },
+    );
+  };
+
   const [forClient, forServer] = ui.tee();
   const done = consumeStream({ stream: forServer, onError: () => undefined })
     // If the stream ended without onEnd ever running, still leave an assistant row behind.
     .then(() => persistOnce(() => writeAssistant(`⚠️ ${friendlyError(undefined)}`, "error", null)))
     .then(writeTrace)
+    .then(writeMemory)
     .catch((err: unknown) => {
       log.error("agent run failed", { threadId, ...errorFields(err) });
     });
 
   return { stream: forClient, done, userMessageId: userRow.id, assistantMessageId: assistantId };
+}
+
+type Part = UIMessagePart<UIDataTypes, UITools>;
+
+/**
+ * What the tracker must cover. The news pass (only when the user asks what shipped / launched) is dated
+ * from the resolved since date, else from the earliest day a listed claim was said.
+ */
+function recheckInput(built: BuiltContext, news: boolean): Parameters<typeof createRecheckTracker>[0] {
+  const items = built.recheck.claims.map((c) => ({ entity: c.entity, attribute: c.attribute, said: c.said }));
+  if (!news) return { items };
+  const earliest = built.recheck.claims.map((c) => c.said).sort()[0];
+  const newsSince = built.trace.sinceDate ?? earliest;
+  return newsSince ? { items, newsSince } : { items };
+}
+
+/** This turn's sources with their [n], from the source-url parts the tool emitted (D20). */
+export function sourcesOf(parts: readonly Part[]): { n: number; url: string }[] {
+  const out: { n: number; url: string }[] = [];
+  for (const p of parts) {
+    if (p.type !== "source-url") continue;
+    const n = p.providerMetadata?.["search"]?.["n"];
+    if (typeof n === "number") out.push({ n, url: p.url });
+  }
+  return out;
 }
 
 interface ContextResult {
@@ -252,10 +332,11 @@ function contextOrFallback(
         refs: times,
         resolvedDates: [],
         ambiguous: [],
-        memoryIds: { turns: [], claims: [] },
+        memoryIds: { turns: [], inThreadTurns: [], claims: [] },
         omittedTurns: 0,
         memoryChars: 0,
       },
+      recheck: { claims: [], domains: [] },
     };
     return { built: fallback, plan, ms: performance.now() - started, error: "context build failed" };
   }

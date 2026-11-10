@@ -198,3 +198,69 @@ describe("fallback", () => {
     expect(peak).toBe(3);
   });
 });
+
+describe("domain hint pairing (D33)", () => {
+  it("with domains, every query is restricted and the first also runs once on any site", async () => {
+    const exa = provider("exa", async (q) => [r(q.domains ? `https://neon.com/${q.query}` : `https://news.test/${q.query}`)]);
+    const out = await make([exa]).run(
+      { queries: ["neon pricing", "supabase pricing"], domains: ["neon.com", "supabase.com"], fresh: true },
+      createTurnCounter(),
+    );
+    expect(exa.calls.map((c) => [c.query, c.domains ?? null])).toEqual([
+      ["neon pricing", ["neon.com", "supabase.com"]],
+      ["supabase pricing", ["neon.com", "supabase.com"]],
+      ["neon pricing", null],
+    ]);
+    expect(exa.calls.every((c) => c.fresh)).toBe(true);
+    expect(out.results.map((x) => x.url)).toContain("https://news.test/neon pricing");
+    expect(out.sources.map((s) => s.query)).toEqual(["neon pricing", "supabase pricing", "neon pricing (any site)"]);
+  });
+
+  it("without domains, nothing extra runs", async () => {
+    const exa = provider("exa", returns([r("https://a.com")]));
+    await make([exa]).run({ queries: ["a", "b"] }, createTurnCounter());
+    expect(exa.calls).toHaveLength(2);
+  });
+
+  it("the unrestricted query failing alone does not mark the call as failed", async () => {
+    const exa = provider("exa", async (q) => {
+      if (!q.domains) throw new SearchProviderError("exa", 500);
+      return [r("https://neon.com/pricing")];
+    });
+    const out = await make([exa]).run({ queries: ["neon pricing"], domains: ["neon.com"] }, createTurnCounter());
+    expect(out.allFailed).toBe(false);
+    expect(out.failed).toEqual(["neon pricing (any site)"]);
+  });
+});
+
+describe("fresh timeout (D40)", () => {
+  it("a fresh query gets the longer timeout, so a slow live crawl is not abandoned for the fallback", async () => {
+    const exa = provider("exa", async (_q, s) => {
+      await new Promise((r, j) => {
+        const t = setTimeout(r, 120);
+        s.addEventListener("abort", () => (clearTimeout(t), j(s.reason)));
+      });
+      return [r("https://neon.com/pricing")];
+    });
+    const tavily = provider("tavily", returns([r("https://tavily.test/x")]));
+    const search = createSearch({ db, providers: [exa, tavily], now: () => clock, timeoutMs: 50, freshTimeoutMs: 400 });
+    const fresh = await search.run({ queries: ["neon pricing"], fresh: true }, createTurnCounter());
+    expect(fresh.sources).toEqual([{ query: "neon pricing", provider: "exa", cached: false }]);
+    expect(tavily.calls).toHaveLength(0);
+    // The same slow provider still times out at the short limit when the query is not fresh.
+    const stale = await search.run({ queries: ["neon pricing plans"] }, createTurnCounter());
+    expect(stale.sources[0]?.provider).toBe("tavily");
+  });
+});
+
+describe("result provenance (D41)", () => {
+  it("each result keeps the query that first found it", async () => {
+    const exa = provider("exa", async (q) => [r(`https://x.test/${q.query.split(" ")[0]}`), r("https://shared.test/")]);
+    const out = await make([exa]).run({ queries: ["bun version", "neon pricing"] }, createTurnCounter());
+    expect(out.results.map((x) => [x.url, x.query])).toEqual([
+      ["https://x.test/bun", "bun version"],
+      ["https://x.test/neon", "neon pricing"],
+      ["https://shared.test/", "bun version"],
+    ]);
+  });
+});

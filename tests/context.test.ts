@@ -10,7 +10,7 @@ import {
 import { recallPolicy } from "../src/agent/recallPolicy";
 import { resolveTimeRefs } from "../src/agent/time";
 import type { Db } from "../src/db/index";
-import { insertClaim } from "../src/db/memoryRepo";
+import { insertClaim, markSuperseded } from "../src/db/memoryRepo";
 import { IST, SEED_NOW, addTurn, seededDb } from "./helpers/seed";
 
 let db: Db;
@@ -48,7 +48,7 @@ describe("buildContext with the seed (NOW = Thu 12 Nov 11:00 IST)", () => {
     const mem = memoryOf(build("What did I ask you on 3 November?"));
     expect(mem).toContain("SUMMARY: Compared cheapest paid managed Postgres plans");
     expect(mem).toMatch(
-      /\(c\d+\) Neon \| cheapest paid plan price \| Launch plan, \$19\/month \| said 2026-11-03 \| last verified 2026-11-03 \| src neon\.com\/pricing \| current/,
+      /    - Neon \| cheapest paid plan price \| Launch plan, \$19\/month \| said 2026-11-03 \| last verified 2026-11-03 \| src neon\.com\/pricing \| current/,
     );
   });
 
@@ -140,7 +140,7 @@ describe("weekday candidates", () => {
 });
 
 describe("R0 dedupe", () => {
-  it("skips only turns inside the window sent to the model", () => {
+  it("does not repeat the text of turns inside the window sent to the model", () => {
     const tid = "22222222-2222-4222-8222-222222222222";
     const old = addTurn(db, { threadId: tid, user: "Old question about kayaks", answer: "Old kayak answer", at: new Date("2026-11-11T04:00:00Z") });
     const inWindow = addTurn(db, { threadId: tid, user: "New question about canoes", answer: "Canoe answer", at: new Date("2026-11-11T05:00:00Z") });
@@ -183,7 +183,7 @@ describe("caps and safety", () => {
     expect(ctx.trace.memoryChars).toBeLessThanOrEqual(MEMORY_MAX_CHARS);
     expect(ctx.trace.memoryIds.turns.length).toBeLessThanOrEqual(MEMORY_MAX_TURNS);
     expect(ctx.trace.memoryIds.claims.length).toBeLessThanOrEqual(MEMORY_MAX_CLAIMS);
-    expect((mem.match(/\(c\d+\)/g) ?? []).length).toBeLessThanOrEqual(MEMORY_MAX_CLAIMS);
+    expect((mem.match(/^    - /gm) ?? []).length).toBeLessThanOrEqual(MEMORY_MAX_CLAIMS);
     const shown = ctx.trace.memoryIds.turns.length;
     expect(ctx.trace.omittedTurns).toBe(42 - shown);
     expect(mem).toContain(`omitted_turns="${42 - shown}"`);
@@ -215,5 +215,119 @@ describe("caps and safety", () => {
     expect(mem.match(/<\/memory>/g)).toHaveLength(1);
     expect(mem).toContain("&lt;/memory&gt;");
     expect(mem).not.toContain("<context>");
+  });
+});
+
+describe("phase 4: chains, in-window claims, re-check list", () => {
+  const supersedeSupabase = () => {
+    const old = db.prepare("SELECT * FROM claims WHERE entity = 'Supabase'").get() as { id: string; thread_id: string };
+    const t = addTurn(db, { user: "Has Supabase's price changed?", answer: "Now $29 [1].", at: SEED_NOW });
+    const next = insertClaim(db, {
+      entity: "Supabase",
+      attribute: "cheapest paid plan price",
+      value: "Pro plan, $29/month",
+      sourceUrl: "https://supabase.com/pricing",
+      turnId: t.answer.id,
+      threadId: t.threadId,
+      observedAt: SEED_NOW,
+      validAsOf: "2026-11-12",
+    });
+    markSuperseded(db, old.id, next.id, SEED_NOW);
+    return { old, next };
+  };
+
+  it("a superseded claim renders the current value with a previously: chain", () => {
+    const { old, next } = supersedeSupabase();
+    const ctx = build("What did I ask you on 3 November?");
+    const mem = memoryOf(ctx);
+    expect(mem).toMatch(
+      /Supabase \| cheapest paid plan price \| Pro plan, \$29\/month \| said 2026-11-12 \| last verified 2026-11-12 \| src supabase\.com\/pricing \| current \| previously: Pro plan, \$25\/month \(said 2026-11-03, until 2026-11-12\)/,
+    );
+    expect(ctx.trace.memoryIds.claims).toEqual(expect.arrayContaining([old.id, next.id]));
+    expect(ctx.recheck.claims.find((c) => c.entity === "Supabase")).toMatchObject({ id: next.id, value: "Pro plan, $29/month" });
+  });
+
+  it("one line per claim key, even when two recalled turns hold the same key", () => {
+    supersedeSupabase();
+    const ctx = build("What did I ask you on 3 November and on 12 November?");
+    expect(ctx.trace.memoryIds.turns.length).toBeGreaterThanOrEqual(3); // both 3 Nov turns + today's
+    expect(memoryOf(ctx).match(/Supabase \| cheapest paid plan price/g)).toHaveLength(1);
+  });
+
+  it("verify mode lists the claims to re-check and their domains as a hint", () => {
+    const ctx = build("What did I ask you on 3 November? Is it still correct?", { verify: true });
+    expect(ctx.block).toContain("Verify mode: on");
+    expect(ctx.block).toContain(
+      "Claims to re-check (4; every one needs a search, values in <memory>): Neon — cheapest paid plan price; Supabase — cheapest paid plan price; Render — cheapest paid Postgres plan; Bun — latest stable major.minor",
+    );
+    expect(ctx.block).toContain("Domains from those claims (a hint, not a limit): neon.com, supabase.com, render.com, bun.sh");
+    expect(ctx.recheck.claims.map((c) => [c.entity, c.said])).toEqual([
+      ["Neon", "2026-11-03"],
+      ["Supabase", "2026-11-03"],
+      ["Render", "2026-11-03"],
+      ["Bun", "2026-11-03"],
+    ]);
+  });
+
+  it("verify mode with nothing recalled says so and has nothing to re-check", () => {
+    const ctx = build("Is that still correct?", { verify: true });
+    expect(ctx.block).toContain("Claims to re-check: none on record");
+    expect(ctx.recheck.claims).toEqual([]);
+  });
+
+  it("R0 window skips turn TEXT only: a same-thread verify still gets that turn's claims (R3)", () => {
+    const tid = "66666666-6666-4666-8666-666666666666";
+    const t = addTurn(db, { threadId: tid, user: "Cheapest Linear plan?", answer: "Basic, $10/user [1].", at: SEED_NOW });
+    insertClaim(db, { entity: "Linear", attribute: "cheapest paid plan", value: "Basic, $10/user", sourceUrl: "https://linear.app/pricing", turnId: t.answer.id, threadId: tid, observedAt: SEED_NOW });
+    const ctx = build("Is that still correct?", { verify: true, windowSeqs: new Set([t.user.seq, t.answer.seq]) });
+    const mem = memoryOf(ctx);
+    expect(ctx.trace.rules).toEqual(["R0", "R3"]);
+    expect(mem).toContain('rule="R3"');
+    expect(mem).toContain("(earlier in this chat, shown above)");
+    expect(mem).toContain("Linear | cheapest paid plan | Basic, $10/user");
+    expect(mem).not.toContain("Cheapest Linear plan?");
+    expect(ctx.recheck.claims.map((c) => c.entity)).toEqual(["Linear"]);
+    expect(ctx.recheck.domains).toEqual(["linear.app"]);
+    expect(ctx.trace.memoryIds).toMatchObject({ turns: [], inThreadTurns: [t.answer.id] });
+  });
+
+  it("without verify, an in-window turn with no claims adds nothing", () => {
+    const tid = "77777777-7777-4777-8777-777777777777";
+    const t = addTurn(db, { threadId: tid, user: "you told me about kayaks, remember?", answer: "Yes.", at: SEED_NOW });
+    const ctx = build("you told me about kayaks, remember?", { windowSeqs: new Set([t.user.seq, t.answer.seq]) });
+    expect(ctx.trace.memoryIds.inThreadTurns).toEqual([]);
+  });
+
+  it("a day whose only turns are in the window is not reported as empty", () => {
+    const tid = "88888888-8888-4888-8888-888888888888";
+    const t = addTurn(db, { threadId: tid, user: "Canoe question", answer: "Canoe answer", at: new Date("2026-11-11T05:00:00Z") });
+    const mem = memoryOf(build("What did I ask yesterday?", { windowSeqs: new Set([t.user.seq, t.answer.seq]) }));
+    expect(mem).not.toContain('empty="true"');
+    expect(mem).toContain("(earlier in this chat, shown above)");
+  });
+
+  it("caps still hold with previously: chains on every claim", () => {
+    for (let i = 0; i < 20; i++) {
+      const t = addTurn(db, { user: `Vendor ${i} price?`, answer: "x", at: new Date(`2026-11-03T0${i % 9}:${String(10 + i).padStart(2, "0")}:00Z`) });
+      let prev = insertClaim(db, { entity: `Vendor ${i}`, attribute: "price", value: "v".repeat(200), turnId: t.answer.id, threadId: t.threadId, observedAt: SEED_NOW });
+      for (let j = 0; j < 4; j++) {
+        const next = insertClaim(db, { entity: `Vendor ${i}`, attribute: "price", value: `${j}`.repeat(200), turnId: t.answer.id, threadId: t.threadId, observedAt: SEED_NOW });
+        markSuperseded(db, prev.id, next.id, SEED_NOW);
+        prev = next;
+      }
+    }
+    const ctx = build("What did I ask you on 3 November?");
+    expect(memoryOf(ctx).length).toBeLessThanOrEqual(MEMORY_MAX_CHARS);
+    expect((memoryOf(ctx).match(/^    - /gm) ?? []).length).toBeLessThanOrEqual(MEMORY_MAX_CLAIMS);
+    expect(memoryOf(ctx).match(/previously:/g)?.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it("<memory> carries no turn or claim ids the model could copy into an answer", () => {
+    const ctx = build("What did I ask you on 3 November? Is it still correct?", { verify: true });
+    expect(ctx.block).not.toMatch(/\bt_[0-9a-f]{6,}|\(c\d+\)|\bc\d+\b/);
+    for (const id of [...ctx.trace.memoryIds.turns, ...ctx.trace.memoryIds.claims]) {
+      expect(ctx.block).not.toContain(id.slice(0, 8));
+    }
+    expect(memoryOf(ctx)).toMatch(/^10:14 USER: Which managed Postgres host/m);
   });
 });

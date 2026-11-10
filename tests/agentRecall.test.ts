@@ -4,14 +4,14 @@ import { SYSTEM_PROMPT } from "../src/agent/prompts";
 import type { Db } from "../src/db/index";
 import { getTrace } from "../src/db/memoryRepo";
 import { listMessages } from "../src/db/repo";
-import { textModel } from "./helpers/mockModel";
+import { textModel, objectModel, emptyExtraction } from "./helpers/mockModel";
 import { noSearch } from "./helpers/search";
 import { IST, SEED_NOW, seededDb } from "./helpers/seed";
 
 const TID = "33333333-3333-4333-8333-333333333333";
 const deps = (db: Db, main: AgentDeps["models"]["main"]): AgentDeps => ({
   db,
-  models: { main },
+  models: { main, small: objectModel(emptyExtraction) },
   now: () => SEED_NOW,
   search: noSearch,
   maxSteps: 4,
@@ -57,7 +57,7 @@ describe("runAgent with recall", () => {
     expect(JSON.parse(trace?.resolved_dates_json ?? "{}").resolved).toEqual(["2026-11-03"]);
     expect(JSON.parse(trace?.memory_ids_json ?? "{}").turns).toHaveLength(2);
     expect(trace?.memory_chars).toBeGreaterThan(0);
-    expect(JSON.parse(trace?.intent_json ?? "{}")).toEqual({ verify: false });
+    expect(JSON.parse(trace?.intent_json ?? "{}")).toEqual({ verify: false, cues: [], news: false, forcedSearch: false });
   });
 
   it("an unrelated question records R0 only and injects nothing", async () => {
