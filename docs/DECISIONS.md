@@ -96,7 +96,10 @@ vite 8 / vitest 5 (forces a Node upgrade for no product benefit).
 
 **D9 — Toolchain pins for the Node 22 floor.** `vite@^6` + `@vitejs/plugin-react@^4` (vite 7/8 need Node 20.19/22.12+),
 `vitest@^3`, `concurrently@^9`, `typescript@~6.0` (not the 7.x native compiler), `@types/node@^22` so types match
-the runtime. `better-sqlite3@~12.9.0`: from 12.10 on the project ships no Node 20 prebuilds, and 12.9.0 has
-prebuilt binaries for Node 20, 22 and 24 on macOS (arm64/x64), Linux and Windows, so installs never need a compiler.
+the runtime. `better-sqlite3@^12` (resolves to 12.11.1; 13.x needs Node >=22 but is a new major we haven't vetted).
+The first pin, `~12.9.0`, only existed to keep Node 20 prebuilds, which no longer matter. Checked against the
+GitHub release assets: 12.11.1 ships prebuilt binaries for Node 22, 24, 25 and 26 on macOS (arm64, x64), Linux
+(x64, arm64, arm, musl) and Windows (x64, arm64), and declares `engines` 20 to 26, so a reviewer on Node 22, 24
+or 26 never compiles from source. 12.9.0 would have failed that bar: it covers Node 20 to 25 but has no Node 26 binary.
 Known cost: vitest 3 has two npm-audit advisories (tinypool, @vitest/mocker). Dev-only; they affect the test
 runner, not the app. The fix is vitest 5, which needs Node >=22.12; revisit if the floor moves.

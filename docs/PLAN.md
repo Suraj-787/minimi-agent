@@ -97,6 +97,8 @@ forgetting a claim removes it from the next turn's recall (test); the debug draw
 - [ ] README: setup in 3 steps, keys, scripts, troubleshooting (429s, Node version)
 - [ ] Fresh-clone test in a new folder: `npm install && npm run dev` with only `.env` added
 - [ ] Remove dead code; check `npm run typecheck`, `npm test`
+- [ ] Clean npm audit: raise the Node floor to 22.12 (engines, .nvmrc, check-env, README), update vitest and vite
+  (and plugin-react) to the current majors, confirm `npm audit` is clean, and re-run typecheck, tests and the dev server.
 - [ ] *Stretch:* quiet stale-claim hint (SPEC §16)
 
 **Done when:** a stranger can run it in under 5 minutes, and every decision in DECISIONS.md is reflected in the code.
