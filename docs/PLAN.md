@@ -21,12 +21,12 @@ Rules: one phase per working session. Plan mode first. A phase is done only when
 `/api/health` returns `{ok:true}`; `npm run typecheck` and `npm test` pass (one clock test).
 
 ## Phase 1 — Agent loop, persistence, chat UI (no search yet)
-- [ ] `db/`: schema.sql with all tables from SPEC §10 and FTS5 triggers; idempotent migration on boot
-- [ ] `agent/model.ts`: provider and model from env (`LLM_PROVIDER`, `MAIN_MODEL`, `SMALL_MODEL`)
-- [ ] `agent/prompts.ts`: static system prompt (SPEC §6) + dynamic section builder
-- [ ] `agent/index.ts`: `runAgent(deps, input)` streams the model reply; persists both messages
-- [ ] `/api/chat`, `/api/threads*`; web: thread sidebar, `useChat`, markdown, Enter to send
-- [ ] `scripts/chat-cli.ts` uses the same `runAgent`
+- [x] `db/`: schema.sql with all tables from SPEC §10 and FTS5 triggers; idempotent migration on boot
+- [x] `agent/model.ts`: provider and model from env (`LLM_PROVIDER`, `MAIN_MODEL`, `SMALL_MODEL`)
+- [x] `agent/prompts.ts`: static system prompt (SPEC §6) + dynamic section builder
+- [x] `agent/index.ts`: `runAgent(deps, input)` streams the model reply; persists both messages
+- [x] `/api/chat`, `/api/threads*`; web: thread sidebar, `useChat`, markdown, Enter to send
+- [x] `scripts/chat-cli.ts` uses the same `runAgent`
 
 **Done when:** you can chat in the browser and in the CLI; refreshing keeps the history; messages have
 `local_date` in the browser's timezone; tests cover the repository functions (with an in-memory DB).

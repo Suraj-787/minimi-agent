@@ -103,3 +103,37 @@ GitHub release assets: 12.11.1 ships prebuilt binaries for Node 22, 24, 25 and 2
 or 26 never compiles from source. 12.9.0 would have failed that bar: it covers Node 20 to 25 but has no Node 26 binary.
 Known cost: vitest 3 has two npm-audit advisories (tinypool, @vitest/mocker). Dev-only; they affect the test
 runner, not the app. The fix is vitest 5, which needs Node >=22.12; revisit if the floor moves.
+
+**D10 — The server owns history; the client sends only the newest message.** `useChat`'s
+`prepareSendMessagesRequest` posts `{threadId, message, timezone}`. The stored text is therefore exactly what the
+user typed, and the dynamic block (time anchor) is added server-side at call time and never persisted.
+*Rejected:* trusting the client's message array (it could drift from the DB and would persist injected context).
+
+**D11 — Thread titles are derived in code from the first user message (≤ 60 chars).** No LLM call, so nothing
+slow runs before the first token (rule 5). An LLM title can be added to the background pass later.
+
+**D12 — Disconnect safety by teeing the UI stream.** `runAgent` splits the UI stream in two: the client gets one
+branch and the server drains the other with `consumeStream`. If the browser disconnects, the model keeps going and the
+FULL reply is saved. `abortSignal` is deliberately not forwarded from the request. Persistence is memoised
+(`persistOnce`) and also runs after the drain, so a user message can never be left without an assistant row.
+Rows carry `status` = `complete | partial | error` (extra column on `messages`); `partial` is used if the model
+stream itself aborts. `done` resolves only after persistence, and Phase 4 will chain the memory write onto it.
+Cost: a closed tab still spends the tokens for that answer. *Rejected:* aborting on disconnect (loses the answer);
+saving only partial text (the user comes back to a half answer).
+
+**D13 — Provider errors become fixed, readable sentences.** `friendlyError()` maps 401/403 (and Gemini's 400
+"API key not valid"), 429, 5xx and the rest to a fixed sentence; the provider's own message is never sent to the
+client or logged. The error is streamed as an in-stream `error` part (HTTP 200) and saved as an assistant row with
+`status='error'`. Error rows are filtered out of the next prompt. `maxRetries: 0` until Phase 5's `lib/retry.ts`.
+
+**D14 — History trimming (rule R0, ≤ 12 messages, ≤ 6,000 chars) guarantees a user-first, alternating history.** If
+the cap cuts on an assistant message it is dropped, because Gemini rejects history that starts with a model turn.
+The current user message is always kept. *Rejected:* summarising old turns (a model call on the hot path).
+
+**D15 — `messages` has an `INTEGER PRIMARY KEY AUTOINCREMENT seq`; the FTS index keys on it, and `claims` has no
+foreign keys.** Rowids of tables with a text PK can change on VACUUM and desync an external-content FTS index; `seq`
+also gives stable ordering when `NOW` is frozen and every `created_at` is equal. Claims must survive thread
+deletion (rule 10: never hard-deleted by the system), so no cascade reaches them.
+
+**D16 — Only `POST /api/chat` and `POST /api/threads` require a UUID.** Seeded threads (`seed-postgres`) can be read
+and deleted, but can't be continued through the chat endpoint. Revisit in Phase 3 if the demo needs to continue a seed thread.
