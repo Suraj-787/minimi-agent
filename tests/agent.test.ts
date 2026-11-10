@@ -3,7 +3,9 @@ import { runAgent, type AgentDeps } from "../src/agent/index";
 import { SYSTEM_PROMPT } from "../src/agent/prompts";
 import { openDb, type Db } from "../src/db/index";
 import { hasAssistantReplyAfter, listMessages } from "../src/db/repo";
-import { failingModel, gatedModel, textModel } from "./helpers/mockModel";
+import type { Search, SearchOutcome } from "../src/search/index";
+import { failingModel, gatedModel, scriptedModel, textModel } from "./helpers/mockModel";
+import { noSearch } from "./helpers/search";
 
 const NOW = new Date("2026-11-12T05:30:00Z");
 const TID = "11111111-1111-4111-8111-111111111111";
@@ -11,7 +13,7 @@ let db: Db;
 beforeEach(() => {
   db = openDb(":memory:");
 });
-const deps = (main: AgentDeps["models"]["main"]): AgentDeps => ({ db, models: { main }, now: () => NOW });
+const deps = (main: AgentDeps["models"]["main"]): AgentDeps => ({ db, models: { main }, now: () => NOW, search: noSearch, maxSteps: 4 });
 const input = (message: string) => ({ threadId: TID, message, tz: "Asia/Kolkata" });
 
 async function readAll(stream: ReadableStream<unknown>): Promise<unknown[]> {
@@ -119,5 +121,76 @@ describe("provider failures", () => {
     const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
     expect(prompt).not.toContain("rate-limit");
     expect(prompt).toContain("first");
+  });
+});
+
+describe("runAgent with web_search", () => {
+  const found = (n: number): SearchOutcome => ({
+    results: [{ n, isNew: true, title: `Node ${n}`, url: `https://nodejs.org/${n}`, publishedDate: "2026-11-05", snippet: "LTS" }],
+    sources: [{ query: "q", provider: "exa", cached: false }],
+    failed: [],
+    allFailed: false,
+  });
+  const searchOf = (calls: unknown[]): Search => ({
+    run: async (input, turn) => {
+      calls.push(input);
+      const { n } = turn.numberFor(`https://nodejs.org/${calls.length}`);
+      return found(n);
+    },
+  });
+
+  it("searches, streams status + sources, and persists sources with their dates", async () => {
+    const calls: unknown[] = [];
+    const model = scriptedModel([
+      { toolCall: { name: "web_search", input: { queries: ["latest node version"], fresh: true } } },
+      { text: "Node 24 [1]." },
+    ]);
+    const run = await runAgent({ ...deps(model), search: searchOf(calls) }, input("What's the latest Node?"));
+    const chunks = (await readAll(run.stream)) as Array<Record<string, unknown>>;
+    await run.done;
+
+    expect(calls).toEqual([{ queries: ["latest node version"], fresh: true }]);
+    const status = chunks.find((c) => c.type === "data-status");
+    expect(status).toMatchObject({ data: { text: "Searching: latest node version" }, transient: true });
+    expect(chunks.find((c) => c.type === "source-url")).toMatchObject({ sourceId: "src-1", url: "https://nodejs.org/1" });
+
+    const row = listMessages(db, TID).at(-1)!;
+    expect(row.text).toBe("Node 24 [1].");
+    const parts = JSON.parse(row.parts_json!) as Array<Record<string, unknown>>;
+    const source = parts.find((p) => p.type === "source-url");
+    expect(source).toMatchObject({ providerMetadata: { search: { n: 1, publishedDate: "2026-11-05" } } });
+    expect(parts.some((p) => p.type === "data-status")).toBe(false); // transient: never persisted
+  });
+
+  it("does not search for chit-chat", async () => {
+    const run = await runAgent(deps(textModel(["I'm good!"])), input("hey, how's it going?"));
+    await readAll(run.stream);
+    await run.done; // noSearch throws if it is ever called
+    expect(listMessages(db, TID).at(-1)?.text).toBe("I'm good!");
+  });
+
+  it("stops at maxSteps and forces the last step to answer in text", async () => {
+    const calls: unknown[] = [];
+    const model = scriptedModel([{ toolCall: { name: "web_search", input: { queries: ["again"] } } }]);
+    const run = await runAgent({ ...deps(model), search: searchOf(calls), maxSteps: 3 }, input("loop forever"));
+    await readAll(run.stream);
+    await run.done;
+    expect(model.doStreamCalls).toHaveLength(3);
+    expect(calls).toHaveLength(2); // steps 1 and 2 search; step 3 is not allowed to
+    expect(model.doStreamCalls[2]?.toolChoice).toEqual({ type: "none" });
+    expect(model.doStreamCalls[0]?.toolChoice).not.toEqual({ type: "none" });
+  });
+
+  it("a search outage becomes tool output the model can caveat, not a failed turn", async () => {
+    const down: Search = { run: async () => ({ results: [], sources: [], failed: ["q"], allFailed: true }) };
+    const model = scriptedModel([
+      { toolCall: { name: "web_search", input: { queries: ["q"] } } },
+      { text: "I couldn't search right now, but from memory…" },
+    ]);
+    const run = await runAgent({ ...deps(model), search: down }, input("latest node?"));
+    await readAll(run.stream);
+    await run.done;
+    expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).toContain("Search is unavailable");
+    expect(listMessages(db, TID).at(-1)?.status).toBe("complete");
   });
 });

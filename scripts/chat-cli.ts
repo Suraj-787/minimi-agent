@@ -7,13 +7,21 @@ import { openDb } from "../src/db/index";
 import { now } from "../src/lib/clock";
 import { EnvError, env } from "../src/lib/env";
 import { isValidTimezone } from "../src/lib/tz";
+import { createSearchFromEnv } from "../src/search/index";
 
 config({ quiet: true });
 
 // Same runAgent as the server: the CLI only adapts the stream to a terminal.
 async function main(): Promise<void> {
   const e = env();
-  const deps = { db: openDb(e.DB_PATH), models: getModels(e), now };
+  const db = openDb(e.DB_PATH);
+  const deps = {
+    db,
+    models: getModels(e),
+    now,
+    search: createSearchFromEnv(e, db, now),
+    maxSteps: e.MAX_STEPS,
+  };
 
   const flag = process.argv.indexOf("--thread");
   const threadId = (flag > -1 ? process.argv[flag + 1] : undefined) ?? randomUUID();
@@ -30,7 +38,10 @@ async function main(): Promise<void> {
       process.stdout.write("\nagent> ");
       for await (const chunk of run.stream) {
         if (chunk.type === "text-delta") process.stdout.write(chunk.delta);
-        else if (chunk.type === "error") process.stdout.write(`\n⚠️  ${chunk.errorText}`);
+        else if (chunk.type === "data-status") {
+          const text = (chunk.data as { text?: unknown }).text;
+          if (typeof text === "string") process.stdout.write(`\n[${text}]\n`);
+        } else if (chunk.type === "error") process.stdout.write(`\n⚠️  ${chunk.errorText}`);
       }
       process.stdout.write("\n");
       await run.done;

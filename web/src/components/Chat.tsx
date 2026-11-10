@@ -2,6 +2,7 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { readableError } from "../lib/api";
+import { linkCitations, sourcesOf, type Source } from "../lib/citations";
 import { Markdown } from "./Markdown";
 
 interface Props {
@@ -28,17 +29,53 @@ function textOf(m: UIMessage): string {
   return m.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("");
 }
 
+function SourcesList({ sources }: { sources: Source[] }) {
+  if (sources.length === 0) return null;
+  return (
+    <ol className="mt-3 space-y-1 border-t border-neutral-200 pt-2 text-xs text-neutral-600">
+      {sources.map((s) => (
+        <li key={s.n} className="flex gap-2">
+          <span className="w-6 shrink-0 text-right text-neutral-400">[{s.n}]</span>
+          <a href={s.url} target="_blank" rel="noreferrer noopener" className="min-w-0 truncate hover:underline" title={s.title}>
+            {s.title}
+          </a>
+          <span className="shrink-0 text-neutral-400">
+            {s.domain}
+            {s.publishedDate ? ` · ${s.publishedDate}` : ""}
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 export function Chat({ threadId, initialMessages, onTurnEnd }: Props) {
+  // Transient data parts never reach message.parts; onData is the only place they show up.
+  const [searchStatus, setSearchStatus] = useState("");
   const { messages, sendMessage, status, error, clearError } = useChat({
     id: threadId,
     messages: initialMessages,
     transport,
-    onFinish: onTurnEnd,
-    onError: onTurnEnd, // a failed turn still created a thread and an assistant row
+    onData: (part) => {
+      if (part.type !== "data-status") return;
+      const text = (part.data as { text?: unknown } | null)?.text;
+      if (typeof text === "string") setSearchStatus(text);
+    },
+    onFinish: () => {
+      setSearchStatus("");
+      onTurnEnd();
+    },
+    onError: () => {
+      setSearchStatus("");
+      onTurnEnd(); // a failed turn still created a thread and an assistant row
+    },
   });
   const [input, setInput] = useState("");
   const bottom = useRef<HTMLDivElement>(null);
   const busy = status === "submitted" || status === "streaming";
+  // Hide the status once the answer text starts, so "Searching: …" never lingers over a streaming reply.
+  const last = messages[messages.length - 1];
+  const answering = last?.role === "assistant" && textOf(last) !== "";
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: "end" });
@@ -48,6 +85,7 @@ export function Chat({ threadId, initialMessages, onTurnEnd }: Props) {
     const text = input.trim();
     if (!text || busy) return;
     clearError();
+    setSearchStatus("");
     void sendMessage({ text });
     setInput("");
   };
@@ -70,17 +108,23 @@ export function Chat({ threadId, initialMessages, onTurnEnd }: Props) {
           {messages.map((m) => {
             const text = textOf(m);
             if (!text) return null;
+            const sources = sourcesOf(m);
             return m.role === "user" ? (
               <div key={m.id} className="ml-auto max-w-[85%] whitespace-pre-wrap rounded-2xl bg-neutral-900 px-4 py-2 text-white">
                 {text}
               </div>
             ) : (
               <div key={m.id} className="max-w-[95%]">
-                <Markdown text={text} />
+                <Markdown text={linkCitations(text, sources)} />
+                <SourcesList sources={sources} />
               </div>
             );
           })}
-          {status === "submitted" && <p className="text-sm text-neutral-500">Thinking…</p>}
+          {busy && searchStatus && !answering ? (
+            <p role="status" className="text-sm text-neutral-500">{searchStatus}</p>
+          ) : (
+            status === "submitted" && <p className="text-sm text-neutral-500">Thinking…</p>
+          )}
           {error && (
             <div role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
               {readableError(error)}

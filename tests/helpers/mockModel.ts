@@ -76,3 +76,29 @@ export function gatedModel(before: string, after: string) {
   });
   return { model, release };
 }
+
+/**
+ * One scripted model step per doStream call. `toolCall` makes the step end by calling a tool;
+ * after the script runs out the last step repeats (handy for "model never stops searching").
+ */
+export function scriptedModel(steps: Array<{ text?: string; toolCall?: { name: string; input: unknown } }>) {
+  let i = 0;
+  return new MockLanguageModelV4({
+    doStream: async () => {
+      const step = steps[Math.min(i, steps.length - 1)] ?? {};
+      const id = `call-${i++}`;
+      const chunks: Chunk[] = [{ type: "stream-start", warnings: [] }];
+      if (step.text) {
+        chunks.push({ type: "text-start", id: "t1" }, { type: "text-delta", id: "t1", delta: step.text }, { type: "text-end", id: "t1" });
+      }
+      if (step.toolCall) {
+        chunks.push({ type: "tool-call", toolCallId: id, toolName: step.toolCall.name, input: JSON.stringify(step.toolCall.input) });
+      }
+      chunks.push({
+        ...finish,
+        finishReason: { unified: step.toolCall ? ("tool-calls" as const) : ("stop" as const), raw: undefined },
+      });
+      return { stream: streamOf(chunks) as never };
+    },
+  });
+}

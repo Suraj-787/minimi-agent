@@ -32,11 +32,11 @@ Rules: one phase per working session. Plan mode first. A phase is done only when
 `local_date` in the browser's timezone; tests cover the repository functions (with an in-memory DB).
 
 ## Phase 2 — Search layer + the one tool
-- [ ] `search/types.ts` (SearchProvider interface), `exa.ts`, `tavily.ts` (fetch + zod)
-- [ ] `search/index.ts`: parallel queries, timeout, fallback, dedupe, cap, per-turn numbering, SQLite cache
-- [ ] `agent/tools/webSearch.ts`: zod input (SPEC §5), transient `data-status` parts, source-url parts
-- [ ] Multi-step loop with `stopWhen` ≤ `MAX_STEPS`
-- [ ] Web: status line, inline [n] → sources list with domain + date
+- [x] `search/types.ts` (SearchProvider interface), `exa.ts`, `tavily.ts` (fetch + zod)
+- [x] `search/index.ts`: parallel queries, timeout, fallback, dedupe, cap, per-turn numbering, SQLite cache
+- [x] `agent/tools/webSearch.ts`: zod input (SPEC §5), transient `data-status` parts, source-url parts
+- [x] Multi-step loop with `stopWhen` ≤ `MAX_STEPS`
+- [x] Web: status line, inline [n] → sources list with domain + date
 
 **Done when:** "What's the latest stable Node.js version?" searches, cites [n] with working links,
 and shows status while searching; "hi" doesn't search; unit tests for dedupe, numbering, cache key,

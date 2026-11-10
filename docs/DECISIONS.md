@@ -138,3 +138,31 @@ deletion (rule 10: never hard-deleted by the system), so no cascade reaches them
 **D16 — Only `POST /api/chat` and `POST /api/threads` require a UUID.** Rather than loosen the validation for
 `seed-postgres`-style ids, the Phase 3 seed script generates a UUID per seeded thread and keeps the seed.json id as a
 label only, so seeded chats can be continued in the app.
+
+**D17 — The tool is built per turn, and `runAgent` wraps the model stream in `createUIMessageStream`.** A tool's
+`execute` does not receive the stream writer in AI SDK v7, but the SPEC wants transient `data-status` parts and
+`source-url` parts while the tool runs. So the tool gets an `emit` callback that closes over the writer, and the inner
+`toUIMessageStream` is merged into the outer stream. The inner stream's outcome is forwarded with `writer.setOutcome`,
+because otherwise a provider failure is saved as `complete`. Writer-written `source-url` parts are part of the
+response message, so they are persisted in `parts_json`; the transient status is not. The last allowed step runs with
+`toolChoice: "none"`, so hitting `MAX_STEPS` still ends in an answer. *Rejected:* yielding status from an async-generator
+`execute` (it shows up as tool-part states, not transient data parts).
+
+**D18 — Search timeout, fallback and Exa freshness.** The 6 s timeout is per provider attempt, so Exa timing out still
+leaves Tavily a full attempt. Each query falls back independently, and one failed query never sinks the others; only when
+every query fails does the tool tell the model that search is unavailable (it then adds a caveat). Cache lookups happen per
+provider, in order, and `fresh` never reads the cache. `since` shortens the cache TTL but does not switch Tavily to
+`topic: news`. Exa's `maxAgeHours: 0` goes inside `contents`, as the docs describe; one live probe showed the API
+accepts it there and also at the top level, so that probe cannot prove which position it honours. Exa may omit
+`publishedDate`, so the date stays optional end to end. Provider errors keep only name + HTTP status, never the body.
+
+**D19 — Citation numbers belong to the turn, not to a provider response or a cache row.** `createTurnCounter()` assigns
+`n` after merging, so cached results are renumbered from the current turn's counter, and a URL already cited earlier in
+the turn keeps its number (so the same page is never two sources). Merging is round-robin across queries before the cap of 8,
+so one query cannot use up the whole cap. Cache rows hold no numbers.
+
+**D20 — Web text cannot break out of `<search_results>`.** Titles and snippets are entity-escaped (`& < >`, whitespace
+flattened); URLs are percent-encoded for `< >`. A title of `</search_results>` stays inert (tested). Source dates travel in
+`providerMetadata.search.{n, publishedDate}` on the `source-url` part, which is persisted, so `[n]` links and dates
+survive a refresh. In the UI a `[n]` with no matching source stays plain text, and code spans are left alone. Date
+arithmetic (`addMs`, `isoDayFromMs`) lives in `lib/clock.ts` so `src/search` never calls `new Date(`.

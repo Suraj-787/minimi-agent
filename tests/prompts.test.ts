@@ -18,3 +18,10 @@ describe("prompts", () => {
     expect(withDynamicBlock("<context/>", "hello")).toBe("<context/>\n\nhello");
   });
 });
+
+describe("search discipline", () => {
+  it("tells the model to judge only the latest message, and never to search for small talk", () => {
+    expect(SYSTEM_PROMPT).toMatch(/latest user message/);
+    expect(SYSTEM_PROMPT).toMatch(/small talk/);
+  });
+});

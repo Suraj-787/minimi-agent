@@ -5,6 +5,7 @@ import { openDb } from "../db/index";
 import { EnvError, env } from "../lib/env";
 import { now } from "../lib/clock";
 import { errorFields, log } from "../lib/log";
+import { createSearchFromEnv } from "../search/index";
 import { createApp } from "./app";
 
 // quiet: dotenv otherwise prints a promo line on every watch restart.
@@ -15,7 +16,14 @@ process.on("unhandledRejection", (err) => log.error("unhandled rejection", error
 
 try {
   const e = env();
-  const app = createApp({ db: openDb(e.DB_PATH), models: getModels(e), now });
+  const db = openDb(e.DB_PATH);
+  const app = createApp({
+    db,
+    models: getModels(e),
+    now,
+    search: createSearchFromEnv(e, db, now),
+    maxSteps: e.MAX_STEPS,
+  });
   serve({ fetch: app.fetch, port: e.PORT }, (info) => {
     console.log(`server listening on http://localhost:${info.port}`);
   });

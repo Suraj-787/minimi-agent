@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
   consumeStream,
+  createUIMessageStream,
+  isStepCount,
   streamText,
   toUIMessageStream,
   type ModelMessage,
@@ -16,16 +18,21 @@ import {
   type MessageStatus,
 } from "../db/repo";
 import { errorFields, log } from "../lib/log";
+import { createTurnCounter, type Search } from "../search/index";
 import { friendlyError } from "./errors";
 import { HISTORY_MAX_MESSAGES, trimHistory } from "./history";
 import type { Models } from "./model";
 import { SYSTEM_PROMPT, buildDynamicBlock, withDynamicBlock } from "./prompts";
+import { createWebSearchTool, type ToolEmit } from "./tools/webSearch";
 
 // Everything the core needs is passed in (CLAUDE.md rule 4): the server, the CLI and the evals
 // each build their own deps and reuse this function unchanged.
 export interface AgentDeps {
   db: Db;
   models: Pick<Models, "main">;
+  search: Search;
+  /** Model steps per turn (env MAX_STEPS). The last one is forced to answer in text. */
+  maxSteps: number;
   /** lib/clock.now in production; a fixed function in tests. */
   now: () => Date;
 }
@@ -55,7 +62,7 @@ function titleFrom(message: string): string {
 }
 
 export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<AgentRun> {
-  const { db, models, now } = deps;
+  const { db, models, now, search, maxSteps } = deps;
   const { threadId, message, tz } = input;
 
   // 1. Persist the user message first, so it survives whatever happens to the model call.
@@ -102,19 +109,49 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
     });
   };
 
-  const result = streamText({
-    model: models.main,
-    instructions: SYSTEM_PROMPT,
-    messages,
-    // Retries with a user-visible status arrive in Phase 5 (lib/retry.ts); no hidden SDK retries until then.
-    maxRetries: 0,
-    onError: ({ error }) => log.error("model stream error", { threadId, ...errorFields(error) }),
-  });
+  const onError = (error: unknown): string => friendlyError(error);
 
-  const ui = toUIMessageStream({
-    stream: result.stream,
-    generateMessageId: () => assistantId,
-    onError: (error) => friendlyError(error),
+  // The tool needs the stream writer to emit transient status and source parts, and execute()
+  // doesn't receive one, so the tool is built per turn inside createUIMessageStream (D17).
+  const ui = createUIMessageStream({
+    generateId: () => assistantId,
+    onError,
+    execute: ({ writer }) => {
+      const emit: ToolEmit = {
+        status: (text) => writer.write({ type: "data-status", data: { text }, transient: true }),
+        source: ({ n, url, title, publishedDate }) =>
+          writer.write({
+            type: "source-url",
+            sourceId: `src-${n}`,
+            url,
+            title,
+            // Persisted with the message, so [n] and the date survive a refresh.
+            providerMetadata: { search: { n, ...(publishedDate ? { publishedDate } : {}) } },
+          }),
+      };
+      const result = streamText({
+        model: models.main,
+        instructions: SYSTEM_PROMPT,
+        messages,
+        tools: { web_search: createWebSearchTool({ search, turn: createTurnCounter(), emit }) },
+        stopWhen: isStepCount(maxSteps),
+        // On the last allowed step the model may not call the tool, so the turn always ends in text.
+        prepareStep: ({ stepNumber }) => (stepNumber >= maxSteps - 1 ? { toolChoice: "none" } : {}),
+        // Retries with a user-visible status arrive in Phase 5 (lib/retry.ts); no hidden SDK retries until then.
+        maxRetries: 0,
+        onError: ({ error }) => log.error("model stream error", { threadId, ...errorFields(error) }),
+      });
+      writer.merge(
+        toUIMessageStream({
+          stream: result.stream,
+          generateMessageId: () => assistantId,
+          onError,
+          // The outer stream can't see a model failure on its own (it only merges chunks), so the
+          // inner stream's verdict is forwarded; otherwise an error turn would be saved as complete.
+          onEnd: ({ outcome }) => writer.setOutcome(outcome),
+        }),
+      );
+    },
     onEnd: ({ responseMessage, outcome, isAborted, isCancelled }) =>
       persistOnce(() => {
         const text = responseMessage.parts

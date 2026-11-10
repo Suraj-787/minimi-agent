@@ -19,3 +19,13 @@ export function resolveNow(raw: string | undefined, realMs: () => number): Date 
 export function now(): Date {
   return resolveNow(process.env.NOW, Date.now);
 }
+
+/** Date arithmetic lives here with the rest of the date construction, so src/agent and src/search never need `new Date(`. */
+export function addMs(d: Date, ms: number): Date {
+  return new Date(d.getTime() + ms);
+}
+
+/** YYYY-MM-DD (UTC) of an epoch-ms value parsed from a provider string; not a clock read. */
+export function isoDayFromMs(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}

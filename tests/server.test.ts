@@ -3,6 +3,7 @@ import { openDb, type Db } from "../src/db/index";
 import { listMessages } from "../src/db/repo";
 import { createApp } from "../src/server/app";
 import { failingModel, textModel } from "./helpers/mockModel";
+import { noSearch } from "./helpers/search";
 
 const NOW = new Date("2026-11-12T05:30:00Z");
 const ID = "22222222-2222-4222-8222-222222222222";
@@ -10,7 +11,7 @@ let db: Db;
 beforeEach(() => {
   db = openDb(":memory:");
 });
-const app = (model = textModel(["hello"])) => createApp({ db, models: { main: model }, now: () => NOW });
+const app = (model = textModel(["hello"])) => createApp({ db, models: { main: model }, now: () => NOW, search: noSearch, maxSteps: 4 });
 const post = (a: ReturnType<typeof app>, body: unknown) =>
   a.request("/api/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 const ok = { threadId: ID, message: { text: "hi" }, timezone: "Asia/Kolkata" };
