@@ -18,11 +18,15 @@ import {
   type MessageStatus,
 } from "../db/repo";
 import { errorFields, log } from "../lib/log";
+import { insertTrace } from "../db/memoryRepo";
 import { createTurnCounter, type Search } from "../search/index";
+import { buildContext, type BuiltContext } from "./context";
 import { friendlyError } from "./errors";
-import { HISTORY_MAX_MESSAGES, trimHistory } from "./history";
+import { HISTORY_MAX_MESSAGES, selectHistory, toHistoryMessages } from "./history";
 import type { Models } from "./model";
 import { SYSTEM_PROMPT, buildDynamicBlock, withDynamicBlock } from "./prompts";
+import { recallPolicy, type RecallIntent, type RecallPlan } from "./recallPolicy";
+import { resolveTimeRefs } from "./time";
 import { createWebSearchTool, type ToolEmit } from "./tools/webSearch";
 
 // Everything the core needs is passed in (CLAUDE.md rule 4): the server, the CLI and the evals
@@ -77,12 +81,17 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
     createdAt: now(),
   });
 
-  // 2. R0: bounded tail of this thread; the dynamic block goes in front of the latest user message only.
-  const history = trimHistory(recentMessages(db, threadId, HISTORY_MAX_MESSAGES + 4));
-  const block = buildDynamicBlock({ now: now(), tz });
+  // 2. R0: bounded tail of this thread. 3. Times → recall plan → context (SQLite + code only, SPEC §3).
+  //    The dynamic block goes in front of the latest user message only, and is never stored.
+  const window = selectHistory(recentMessages(db, threadId, HISTORY_MAX_MESSAGES + 4));
+  const history = toHistoryMessages(window);
+  const at = now();
+  // TODO(phase4): replace with detectIntent(message) from agent/intent.ts.
+  const intent: RecallIntent = { verify: false };
+  const ctx = contextOrFallback(deps, { message, tz, at, intent, windowSeqs: new Set(window.map((r) => r.seq)) });
   const messages: ModelMessage[] = history.map((m, i) => ({
     role: m.role,
-    content: i === history.length - 1 ? withDynamicBlock(block, m.text) : m.text,
+    content: i === history.length - 1 ? withDynamicBlock(ctx.built.block, m.text) : m.text,
   }));
 
   const assistantId = randomUUID();
@@ -168,15 +177,86 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
       }),
   });
 
+  // Tracing runs after the reply is saved and never affects it (rule 5).
+  const writeTrace = (): void => {
+    try {
+      insertTrace(db, {
+        turnId: assistantId,
+        threadId,
+        intent,
+        resolvedDates: {
+          refs: ctx.built.trace.refs,
+          resolved: ctx.built.trace.resolvedDates,
+          ambiguous: ctx.built.trace.ambiguous,
+          ...(ctx.built.trace.sinceDate ? { sinceDate: ctx.built.trace.sinceDate } : {}),
+        },
+        recallRules: ctx.built.trace.rules,
+        memoryIds: { ...ctx.built.trace.memoryIds, omittedTurns: ctx.built.trace.omittedTurns },
+        memoryChars: ctx.built.trace.memoryChars,
+        contextMs: ctx.ms,
+        ...(ctx.error ? { errors: [ctx.error] } : {}),
+        createdAt: now(),
+      });
+    } catch (err) {
+      log.error("trace write failed", { threadId, ...errorFields(err) });
+    }
+  };
+
   // 4. Two readers. The client gets one branch; we drain the other ourselves. If the browser
   //    disconnects mid-answer, the model keeps streaming into our branch and the full reply is saved.
   const [forClient, forServer] = ui.tee();
   const done = consumeStream({ stream: forServer, onError: () => undefined })
     // If the stream ended without onEnd ever running, still leave an assistant row behind.
     .then(() => persistOnce(() => writeAssistant(`⚠️ ${friendlyError(undefined)}`, "error", null)))
+    .then(writeTrace)
     .catch((err: unknown) => {
       log.error("agent run failed", { threadId, ...errorFields(err) });
     });
 
   return { stream: forClient, done, userMessageId: userRow.id, assistantMessageId: assistantId };
+}
+
+interface ContextResult {
+  built: BuiltContext;
+  plan: RecallPlan;
+  ms: number;
+  error?: string;
+}
+
+/**
+ * Memory is an enhancement: if recall fails (a corrupt row, an FTS hiccup) the turn still runs with
+ * the time anchor and this thread's history, and the failure goes into the trace.
+ */
+function contextOrFallback(
+  deps: AgentDeps,
+  input: { message: string; tz: string; at: Date; intent: RecallIntent; windowSeqs: ReadonlySet<number> },
+): ContextResult {
+  const started = performance.now();
+  const times = resolveTimeRefs(input.message, input.at, input.tz);
+  const plan = recallPolicy({ message: input.message, intent: input.intent, times });
+  try {
+    const built = buildContext(deps.db, {
+      message: input.message,
+      now: input.at,
+      tz: input.tz,
+      plan,
+      windowSeqs: input.windowSeqs,
+    });
+    return { built, plan, ms: performance.now() - started };
+  } catch (err) {
+    log.error("context build failed", errorFields(err));
+    const fallback: BuiltContext = {
+      block: buildDynamicBlock({ now: input.at, tz: input.tz }),
+      trace: {
+        rules: ["R0"],
+        refs: times,
+        resolvedDates: [],
+        ambiguous: [],
+        memoryIds: { turns: [], claims: [] },
+        omittedTurns: 0,
+        memoryChars: 0,
+      },
+    };
+    return { built: fallback, plan, ms: performance.now() - started, error: "context build failed" };
+  }
 }

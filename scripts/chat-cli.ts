@@ -53,6 +53,11 @@ async function main(): Promise<void> {
 
 main().catch((err: unknown) => {
   if (err instanceof EnvError) console.error(err.message);
-  else if ((err as { code?: string }).code !== "ABORT_ERR") console.error(err);
+  else {
+    const code = (err as { code?: string }).code;
+    // Ctrl+C (ABORT_ERR) and end of piped input (ERR_USE_AFTER_CLOSE) are normal ways to leave.
+    if (code === "ABORT_ERR" || code === "ERR_USE_AFTER_CLOSE") process.exit(0);
+    console.error(err);
+  }
   process.exit(1);
 });

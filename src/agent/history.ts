@@ -23,10 +23,22 @@ export function trimHistory(
   maxMessages = HISTORY_MAX_MESSAGES,
   maxChars = HISTORY_MAX_CHARS,
 ): HistoryMessage[] {
+  return toHistoryMessages(selectHistory(rows, maxMessages, maxChars));
+}
+
+/**
+ * The rows rule R0 actually sends, before merging. The caller keeps their `seq`s so cross-thread
+ * recall can skip exactly the turns already in this window, and no others.
+ */
+export function selectHistory<R extends Pick<MessageRow, "role" | "text" | "status">>(
+  rows: readonly R[],
+  maxMessages = HISTORY_MAX_MESSAGES,
+  maxChars = HISTORY_MAX_CHARS,
+): R[] {
   // An error row holds our own apology text, not something the model said; keep it out of the prompt.
   const usable = rows.filter((r) => !(r.role === "assistant" && r.status === "error"));
 
-  const kept: HistoryMessage[] = [];
+  const kept: R[] = [];
   let chars = 0;
   for (let i = usable.length - 1; i >= 0 && kept.length < maxMessages; i--) {
     const r = usable[i];
@@ -34,13 +46,16 @@ export function trimHistory(
     const isLast = i === usable.length - 1;
     if (!isLast && chars + r.text.length > maxChars) break;
     chars += r.text.length;
-    kept.unshift({ role: r.role, text: r.text });
+    kept.unshift(r);
   }
 
   // The cut can land on an assistant message. Drop it rather than start the history with a model turn.
   while (kept[0]?.role === "assistant") kept.shift();
+  return kept;
+}
 
-  return mergeConsecutive(kept);
+export function toHistoryMessages(rows: readonly Pick<MessageRow, "role" | "text">[]): HistoryMessage[] {
+  return mergeConsecutive(rows.map((r) => ({ role: r.role, text: r.text })));
 }
 
 // Dropping an error row can leave two user messages in a row; one combined turn is the safest shape.

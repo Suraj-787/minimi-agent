@@ -166,3 +166,53 @@ flattened); URLs are percent-encoded for `< >`. A title of `</search_results>` s
 `providerMetadata.search.{n, publishedDate}` on the `source-url` part, which is persisted, so `[n]` links and dates
 survive a refresh. In the UI a `[n]` with no matching source stays plain text, and code spans are left alone. Date
 arithmetic (`addMs`, `isoDayFromMs`) lives in `lib/clock.ts` so `src/search` never calls `new Date(`.
+
+**D21 — Time phrases: own code for weeks, weekdays and "since"; chrono for the rest.** chrono gets the product
+meaning wrong ("this week" starts on Sunday, "since" is dropped, a weekday has one answer, a year-less date can land in
+the future), so `time.ts` handles week phrases (Mon→today, Mon→yesterday, prev Mon→Sun), weekdays and "since" with
+regexes, masks them, and passes the remaining text to chrono with the IANA zone converted to a minute offset at that
+instant. A year-less date in the future rolls back one year. Future dates, bare times and a bare month without a lead-in
+("March madness") resolve to nothing. A weekday equal to today's means 7 days ago (14 days ago is the second candidate),
+never today: people say "today" or "this morning" for today, and the candidate pair absorbs a one-week slip. Vague
+phrases ("the other day", "a few days ago", "recently") resolve to no date on purpose and leave recall to topic words.
+"today" is dropped only next to a verify cue (still / now / currently / as of), where it is the comparison point.
+*Rejected:* chrono for everything (wrong week and weekday semantics); asking the model to resolve dates (rule 3).
+
+**D22 — R2 fires on back-reference verbs plus at least one topic word.** Cues: you told / said / recommended / suggested /
+mentioned, I asked, we discussed / shortlisted / talked about, did I ask…, remember, last time. SPEC's bare "our …" and
+"earlier" were dropped: "structure our REST API errors" would have pulled the seeded Bun "new API" chat into an unrelated
+answer, which is exactly the over-application R4 exists to stop. With no topic words, R2 has nothing to search, so it
+does not fire. R4 is recorded as `crossThread: false`, not as a rule id, so unrelated questions trace as `["R0"]`.
+
+**D23 — Topic matching is FTS5 prefix search over light stems, scored by distinct terms matched.** Terms drop function
+words, conversation verbs (asked, told, said, discussed…), time words and verify cues. A suffix strip ("pricing" →
+`"pric"*`) finds "price" without a stemmer dependency. Each term is one quoted prefix query, so user text is never read as
+FTS syntax. With ≥ 2 terms a turn needs ≥ 2 distinct matches to count as on-topic, so one shared generic word ("price")
+does not drag the Postgres chat into a CRM question. The same test picks between weekday candidates (no topic words → any
+turn on that day wins) and filters a resolved day down to its on-topic turns, falling back to the whole day when none match.
+*Rejected:* embeddings (Phase 0 dependency list, and exact dates do the heavy lifting); OR-ranking with no threshold (noisy).
+
+**D24 — A turn is a user message plus the next assistant row; recall reads it from `messages`, not a turns table.**
+`turnId` is the assistant id, which is also the key for `turn_summaries` and `claims.turn_id`. Error replies are not
+recallable. Turns whose user message is inside the R0 window actually sent to the model are skipped (by `seq`), but older
+turns of the same thread can still be recalled by date. Until Phase 4 writes summaries for live turns, a 300-char excerpt of
+the answer stands in for the summary.
+
+**D25 — Memory caps are enforced by rendering, with truncation before dropping.** Each turn is cut to 1,500 chars (user
+≤ 200, summary ≤ 400, claim values ≤ 200, overflow claims become "(+N more claims not shown)"), then whole turns are
+dropped from the lowest priority end until the block is ≤ 4,000 chars and ≤ 5 turns; claims are capped at 12 across the
+block. Dropped turns are reported as `omitted_turns` on the `<memory>` tag and in the trace, and a static prompt line
+makes the model say "showing X of Y". Superseded claims are rendered with their superseded date and count toward the
+caps; forgotten claims never render. All recalled text is entity-escaped, so `</memory>` in an old message stays inert.
+
+**D26 — Recall failure degrades to R0, and the trace is written after the reply.** If the context build throws, the turn
+runs with the time anchor and thread history, and the trace records the error. The trace row (intent, refs, chosen dates,
+ambiguity, since date, rules, memory ids, omitted turns, chars, context ms) is written after the assistant row, and a
+failed trace write is only logged (rule 5). Until Phase 4, `runAgent` passes `{ verify: false }` (`TODO(phase4)`).
+
+**D27 — The seed is a fixture loader, not a memory write.** `scripts/seed.ts` exports `loadSeed(db, seed, now)` for the
+eval runner; turns are dated `daysAgo` before `now()` in the seed's timezone, `{{date}}` becomes "3 Nov 2026", sources become
+numbered `source-url` parts, and claims are dated to the turn and logged in `memory_writes` as `add` with
+`{source:"seed"}`. It does not go through `scan.ts`, because it is trusted fixture data. `--reset` deletes the DB file and its
+WAL side files, so no code path ever runs `DELETE FROM claims`. Without `--reset`, threads whose title exists are skipped.
+`claimKey()` lives in `src/memory/claimKey.ts` now so seeded and live claims share one merge key.

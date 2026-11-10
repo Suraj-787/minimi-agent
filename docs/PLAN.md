@@ -43,14 +43,14 @@ and shows status while searching; "hi" doesn't search; unit tests for dedupe, nu
 fallback (with mocked providers).
 
 ## Phase 3 — Time, recall policy, context builder, seed
-- [ ] `agent/time.ts`: `resolveTimeRefs` (SPEC §4.2) including weekday candidates and IANA → offset
-- [ ] `agent/recallPolicy.ts`: pure function → `RecallPlan` with rules R0–R4 (SPEC §4.0)
-- [ ] `agent/context.ts`: executes the plan (local_date lookup, FTS topic match, candidate choice),
+- [x] `agent/time.ts`: `resolveTimeRefs` (SPEC §4.2) including weekday candidates and IANA → offset
+- [x] `agent/recallPolicy.ts`: pure function → `RecallPlan` with rules R0–R4 (SPEC §4.0)
+- [x] `agent/context.ts`: executes the plan (local_date lookup, FTS topic match, candidate choice),
   renders the bounded `<memory>` block (SPEC §4.3), enforces char caps
-- [ ] `agent/prompts.ts`: static system prompt; dynamic block prepended to the latest user message only at call time (never persisted)
-- [ ] `scripts/seed.ts`: loads `eval/seed.json` (`daysAgo` relative to `now()`, replaces `{{date}}`, writes turn summaries + claims with `observed_at` = turn date); `--reset` flag clears the DB first.
+- [x] `agent/prompts.ts`: static system prompt; dynamic block prepended to the latest user message only at call time (never persisted)
+- [x] `scripts/seed.ts`: loads `eval/seed.json` (`daysAgo` relative to `now()`, replaces `{{date}}`, writes turn summaries + claims with `observed_at` = turn date); `--reset` flag clears the DB first.
   Generates a UUID for each seeded thread (the seed.json `id` is a label only, e.g. in the title or logs), so `/api/chat` accepts them and seeded chats can be continued in the app
-- [ ] Trace: resolved dates, recall rules fired, memory ids injected, memory chars
+- [x] Trace: resolved dates, recall rules fired, memory ids injected, memory chars
 
 **Done when:** table-driven tests pass for: "3 November", "Nov 3", "yesterday", "on Monday",
 "last Tuesday" (two candidates), "since Monday", "this week", a date with no year, timezone edge (23:30 IST is the same local day);
@@ -61,6 +61,7 @@ lists both seeded questions without a search call.
 
 ## Phase 4 — Memory write path + verify mode
 - [ ] `agent/intent.ts` + tests (SPEC §8)
+- [ ] Replace the hardcoded `intent = { verify: false }` in `agent/index.ts` (`TODO(phase4)`) with `detectIntent(message)`, so R3 fires in the app
 - [ ] `memory/extract.ts`: one small-model structured call → summary + claims (SPEC §7.1), input = user msg + final answer + cited URLs only
 - [ ] `memory/scan.ts`: injection / exfiltration scanner (SPEC §15) + tests with nasty strings
 - [ ] `memory/reconcile.ts`: claim key normalisation + ADD / TOUCH / SUPERSEDE (SPEC §7.3), all ops logged to `memory_writes`
