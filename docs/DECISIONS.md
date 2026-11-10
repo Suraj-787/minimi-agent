@@ -135,5 +135,6 @@ foreign keys.** Rowids of tables with a text PK can change on VACUUM and desync 
 also gives stable ordering when `NOW` is frozen and every `created_at` is equal. Claims must survive thread
 deletion (rule 10: never hard-deleted by the system), so no cascade reaches them.
 
-**D16 — Only `POST /api/chat` and `POST /api/threads` require a UUID.** Seeded threads (`seed-postgres`) can be read
-and deleted, but can't be continued through the chat endpoint. Revisit in Phase 3 if the demo needs to continue a seed thread.
+**D16 — Only `POST /api/chat` and `POST /api/threads` require a UUID.** Rather than loosen the validation for
+`seed-postgres`-style ids, the Phase 3 seed script generates a UUID per seeded thread and keeps the seed.json id as a
+label only, so seeded chats can be continued in the app.

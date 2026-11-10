@@ -182,7 +182,10 @@ Why regex: it costs no model quota and is predictable. A false positive only add
 ## 10. Persistence (SQLite)
 Tables: `threads`, `messages` (+ `messages_fts` FTS5), `turn_summaries`, `claims`, `memory_writes`,
 `search_cache`, `traces`, `llm_cache`.
-- `messages`: id, thread_id, role, text, parts_json, created_at (UTC ISO), local_date, tz.
+- `messages`: id, thread_id, role, text, parts_json, `status` (`complete` | `partial` | `error`, default `complete`),
+  created_at (UTC ISO), local_date, tz. `partial` = the model stream was cut; `error` = the provider failed (the row
+  holds a readable error sentence). Either way the user message still gets an assistant row. `error` rows are
+  never replayed to the model.
 - `turn_summaries`: turn_id (assistant message id), thread_id, local_date, summary, created_at.
 - `claims`: see §7.2. Index on `(key, status)` and `turn_id`.
 - `memory_writes`: id, turn_id, op ('add'|'touch'|'supersede'|'forget'|'rejected'|'error'), claim_id,

@@ -48,7 +48,8 @@ fallback (with mocked providers).
 - [ ] `agent/context.ts`: executes the plan (local_date lookup, FTS topic match, candidate choice),
   renders the bounded `<memory>` block (SPEC §4.3), enforces char caps
 - [ ] `agent/prompts.ts`: static system prompt; dynamic block prepended to the latest user message only at call time (never persisted)
-- [ ] `scripts/seed.ts`: loads `eval/seed.json` (`daysAgo` relative to `now()`, replaces `{{date}}`, writes turn summaries + claims with `observed_at` = turn date); `--reset` flag clears the DB first
+- [ ] `scripts/seed.ts`: loads `eval/seed.json` (`daysAgo` relative to `now()`, replaces `{{date}}`, writes turn summaries + claims with `observed_at` = turn date); `--reset` flag clears the DB first.
+  Generates a UUID for each seeded thread (the seed.json `id` is a label only, e.g. in the title or logs), so `/api/chat` accepts them and seeded chats can be continued in the app
 - [ ] Trace: resolved dates, recall rules fired, memory ids injected, memory chars
 
 **Done when:** table-driven tests pass for: "3 November", "Nov 3", "yesterday", "on Monday",
