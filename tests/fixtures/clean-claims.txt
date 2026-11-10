@@ -1,0 +1,6 @@
+# memory/scan.ts must ACCEPT every non-comment line below (normal claims).
+Launch plan, $19/month
+Pro plan, $25/month per organization
+1.3
+Professional, $49 per seat per month (billed annually)
+Supports Postgres 17 and branching

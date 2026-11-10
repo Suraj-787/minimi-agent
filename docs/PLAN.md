@@ -1,0 +1,102 @@
+# PLAN — phase-gated build
+
+Rules: one phase per working session. Plan mode first. A phase is done only when every
+"Done when" item passes and `/verify` is green. Tick the boxes as you go, then commit `phase N: …`.
+
+---
+
+## Phase 0 — Scaffold
+- [ ] Install runtime deps (latest compatible versions, pinned by the lockfile):
+  `ai @ai-sdk/google @ai-sdk/openai @ai-sdk/anthropic @ai-sdk/react hono @hono/node-server
+   better-sqlite3 chrono-node zod dotenv react react-dom react-markdown remark-gfm`
+  (check that the `@ai-sdk/*` majors match `ai@7`, per the v7 docs)
+- [ ] Install dev deps: `typescript tsx vite @vitejs/plugin-react tailwindcss @tailwindcss/vite
+   vitest concurrently @types/node @types/react @types/react-dom @types/better-sqlite3`
+- [ ] `vite.config.ts` (root `web/`, proxy `/api` → `http://localhost:8787`)
+- [ ] `src/lib/env.ts` (zod-validated env, clear error messages), `src/lib/clock.ts` (`now()` with `NOW` override)
+- [ ] Hono server with `GET /api/health`. Web page says "hello".
+- [ ] `predev` runs `scripts/check-env.mjs` (already present)
+
+**Done when:** a fresh clone runs `npm install && npm run dev`; the browser shows the page;
+`/api/health` returns `{ok:true}`; `npm run typecheck` and `npm test` pass (one clock test).
+
+## Phase 1 — Agent loop, persistence, chat UI (no search yet)
+- [ ] `db/`: schema.sql with all tables from SPEC §10 and FTS5 triggers; idempotent migration on boot
+- [ ] `agent/model.ts`: provider and model from env (`LLM_PROVIDER`, `MAIN_MODEL`, `SMALL_MODEL`)
+- [ ] `agent/prompts.ts`: static system prompt (SPEC §6) + dynamic section builder
+- [ ] `agent/index.ts`: `runAgent(deps, input)` streams the model reply; persists both messages
+- [ ] `/api/chat`, `/api/threads*`; web: thread sidebar, `useChat`, markdown, Enter to send
+- [ ] `scripts/chat-cli.ts` uses the same `runAgent`
+
+**Done when:** you can chat in the browser and in the CLI; refreshing keeps the history; messages have
+`local_date` in the browser's timezone; tests cover the repository functions (with an in-memory DB).
+
+## Phase 2 — Search layer + the one tool
+- [ ] `search/types.ts` (SearchProvider interface), `exa.ts`, `tavily.ts` (fetch + zod)
+- [ ] `search/index.ts`: parallel queries, timeout, fallback, dedupe, cap, per-turn numbering, SQLite cache
+- [ ] `agent/tools/webSearch.ts`: zod input (SPEC §5), transient `data-status` parts, source-url parts
+- [ ] Multi-step loop with `stopWhen` ≤ `MAX_STEPS`
+- [ ] Web: status line, inline [n] → sources list with domain + date
+
+**Done when:** "What's the latest stable Node.js version?" searches, cites [n] with working links,
+and shows status while searching; "hi" doesn't search; unit tests for dedupe, numbering, cache key,
+fallback (with mocked providers).
+
+## Phase 3 — Time, recall policy, context builder, seed
+- [ ] `agent/time.ts`: `resolveTimeRefs` (SPEC §4.2) including weekday candidates and IANA → offset
+- [ ] `agent/recallPolicy.ts`: pure function → `RecallPlan` with rules R0–R4 (SPEC §4.0)
+- [ ] `agent/context.ts`: executes the plan (local_date lookup, FTS topic match, candidate choice),
+  renders the bounded `<memory>` block (SPEC §4.3), enforces char caps
+- [ ] `agent/prompts.ts`: static system prompt; dynamic block prepended to the latest user message only at call time (never persisted)
+- [ ] `scripts/seed.ts`: loads `eval/seed.json` (`daysAgo` relative to `now()`, replaces `{{date}}`, writes turn summaries + claims with `observed_at` = turn date); `--reset` flag clears the DB first
+- [ ] Trace: resolved dates, recall rules fired, memory ids injected, memory chars
+
+**Done when:** table-driven tests pass for: "3 November", "Nov 3", "yesterday", "on Monday",
+"last Tuesday" (two candidates), "since Monday", "this week", a date with no year, timezone edge (23:30 IST is the same local day);
+recall-policy tests: unrelated question → R0 only; "on Monday…" → R1; "you told me about Neon" → R2;
+"still correct?" → R3; memory block never exceeds caps; system prompt string is byte-identical across turns (test);
+with `NOW=2026-11-12T11:00:00+05:30` + seed, `npm run chat` → "What did I ask you on 3 November?"
+lists both seeded questions without a search call.
+
+## Phase 4 — Memory write path + verify mode
+- [ ] `agent/intent.ts` + tests (SPEC §8)
+- [ ] `memory/extract.ts`: one small-model structured call → summary + claims (SPEC §7.1), input = user msg + final answer + cited URLs only
+- [ ] `memory/scan.ts`: injection / exfiltration scanner (SPEC §15) + tests with nasty strings
+- [ ] `memory/reconcile.ts`: claim key normalisation + ADD / TOUCH / SUPERSEDE (SPEC §7.3), all ops logged to `memory_writes`
+- [ ] Verify-mode prompt section; table format; `fresh` + `domains` used for pricing pages
+- [ ] Recalled claims render current value + `previously:` chain
+
+**Done when:** reconcile unit tests cover add / touch / supersede / key normalisation ("Neon " vs "neon",
+"Pro plan price" vs "pro-plan price"); scanner rejects all fixtures in `tests/fixtures/injection.txt` and
+accepts every line in `tests/fixtures/clean-claims.txt`; A2, A3, A4 from SPEC §14 behave as specified when run by hand;
+after a verify turn with a changed value, the DB shows the old claim `superseded` and linked to the new one.
+
+## Phase 5 — Reliability, speed, observability, memory UI
+- [ ] `lib/retry.ts` (429/5xx backoff + jitter) around model calls; user-visible retry status
+- [ ] Dev LLM cache middleware (`DEV_LLM_CACHE=1`)
+- [ ] Provider-failure path: both search providers down → caveated answer
+- [ ] `/api/debug/:turnId` + "why?" drawer (intent, dates, recall rules, memory injected, queries, latencies)
+- [ ] `/api/memory*` endpoints + **Memory panel** (claims by day, old→new chain, forget claim / forget chat)
+- [ ] Measure: context build ms, time to first token, total; log one line per turn
+
+**Done when:** a simulated 429 (mock) retries and then succeeds; killing the Exa key falls back to Tavily;
+forgetting a claim removes it from the next turn's recall (test); the debug drawer shows a full trace; first-token latency is logged.
+
+## Phase 6 — Evals
+- [ ] `eval/run.ts`: for each case → fresh temp DB → seed → optional `mockSearch` fixture replaces providers
+  → run agent with case `now`/`tz` → wait for background memory writes to finish → collect output, trace, DB state
+- [ ] Deterministic checks from `checks` (searched?, cited?, mustMention, mustNotMention, resolved dates,
+  verify table, recallRules, memoryInjected, claimState)
+- [ ] `eval/judge.ts`: small model scores the rubric 1–5 with a reason (structured output)
+- [ ] Write `eval/results.md` (table: case, pass/fail per check, judge score, latency)
+
+**Done when:** `npm run eval` finishes on the free tier (with DEV_LLM_CACHE) and results.md is committed.
+
+## Phase 7 — Polish + docs (+ stretch)
+- [ ] DESIGN.md final (one page): fill in real numbers from traces/evals
+- [ ] README: setup in 3 steps, keys, scripts, troubleshooting (429s, Node version)
+- [ ] Fresh-clone test in a new folder: `npm install && npm run dev` with only `.env` added
+- [ ] Remove dead code; check `npm run typecheck`, `npm test`
+- [ ] *Stretch:* quiet stale-claim hint (SPEC §16)
+
+**Done when:** a stranger can run it in under 5 minutes, and every decision in DECISIONS.md is reflected in the code.
