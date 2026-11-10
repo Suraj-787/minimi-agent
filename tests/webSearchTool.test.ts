@@ -114,10 +114,11 @@ describe("evidence dates", () => {
     expect(evidenceDate("2026-11-11", since("2026-11-09"))).toBe("published 2026-11-11 (after since)");
   });
 
-  it("in verify mode, labels each result against its item's claim date (the boundary day is on or before)", () => {
+  it("in verify mode, labels each result against its item's claim date: before, same day as, or after (D54)", () => {
     const claim = (date: string) => ({ kind: "claim" as const, entity: "Bun", date });
-    expect(evidenceDate("2026-08-20", claim("2026-11-03"))).toBe("published 2026-08-20 (on or before the Bun claim date 2026-11-03)");
-    expect(evidenceDate("2026-11-03", claim("2026-11-03"))).toBe("published 2026-11-03 (on or before the Bun claim date 2026-11-03)");
+    expect(evidenceDate("2026-08-20", claim("2026-11-03"))).toBe("published 2026-08-20 (before the Bun claim date 2026-11-03)");
+    expect(evidenceDate("2026-11-02", claim("2026-11-03"))).toBe("published 2026-11-02 (before the Bun claim date 2026-11-03)");
+    expect(evidenceDate("2026-11-03", claim("2026-11-03"))).toBe("published 2026-11-03 (same day as the Bun claim date 2026-11-03)");
     expect(evidenceDate("2026-11-04", claim("2026-11-03"))).toBe("published 2026-11-04 (after the Bun claim date 2026-11-03)");
   });
 
@@ -126,7 +127,7 @@ describe("evidence dates", () => {
       since: "2026-11-09",
       claimFor: (r) => (r.query.startsWith("Bun") ? { entity: "Bun", said: "2026-11-03" } : undefined),
     });
-    expect(out).toContain("published 2026-08-20 (on or before the Bun claim date 2026-11-03)");
+    expect(out).toContain("published 2026-08-20 (before the Bun claim date 2026-11-03)");
     expect(out).toContain("published 2026-11-10 (after since)");
   });
 

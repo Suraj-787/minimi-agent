@@ -1,4 +1,5 @@
 import { APICallError, RetryError } from "ai";
+import { isDailyQuota } from "../lib/retry";
 
 // Provider errors can carry request details, so what reaches the chat is a fixed sentence per
 // failure class, never the raw message (CLAUDE.md: no secrets in logs, traces or the client).
@@ -22,6 +23,10 @@ export function friendlyError(err: unknown): string {
   const badKeyText = status === 400 && err instanceof Error && /api key/i.test(err.message);
   if (status === 401 || status === 403 || badKeyText) {
     return "The model provider rejected the API key. Check the key in .env and restart the server.";
+  }
+  // Checked before the generic 429: waiting a minute will not help when the day's quota is gone.
+  if (isDailyQuota(err)) {
+    return "The model provider's daily free quota is used up. It resets tomorrow; try again then, or use another API key or provider.";
   }
   if (status === 429) {
     return "The model provider is rate-limiting requests (the free tier has low limits). Wait a minute and try again.";

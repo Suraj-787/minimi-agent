@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Db } from "../src/db/index";
 import { memoryWritesForTurn } from "../src/db/memoryRepo";
+import { labelWrite } from "../src/server/memoryRoutes";
 import { EXTRACT_INSTRUCTIONS, buildExtractPrompt } from "../src/memory/extract";
 import { citedNumbers, isHedged, validAsOf, writeTurnMemory, type TurnMemoryInput } from "../src/memory/write";
 import { failingModel, objectModel } from "./helpers/mockModel";
@@ -205,3 +206,66 @@ describe("extract prompt", () => {
     expect(EXTRACT_INSTRUCTIONS).toContain('no alternatives ("or"), no notes in parentheses');
   });
 });
+
+describe("a cited source that is not about the item never reaches the ledger (D57)", () => {
+  const REASON = "source doesn't mention the item";
+  const BLOG = { url: "https://blog.hubspot.com/ai-crms", title: "How generative AI is reshaping CRMs", snippet: "HubSpot adds AI agents to Sales Hub." };
+  const NEON = { url: "https://neon.com/pricing", title: "Neon Pricing", snippet: "Launch plan $19/month" };
+  const results = new Map([[1, NEON], [2, BLOG]]);
+  const neonClaim = () => db.prepare("SELECT * FROM claims WHERE entity = 'Neon'").get() as { id: string; last_verified_at: string; status: string; value: string };
+  const known = () => [{ id: neonClaim().id, entity: "Neon", attribute: "cheapest paid plan price", value: "Launch plan, $19/month" }];
+  const table = (status: string, n: number) => `| Item | Status | Source |\n|---|---|---|\n| Neon | ${status} | [${n}] |`;
+  const claimRows = () => (db.prepare("SELECT COUNT(*) AS n FROM claims").get() as { n: number }).n;
+
+  it("an extractor claim citing another vendor's page is skipped and logged with the reason (no add)", async () => {
+    const before = claimRows();
+    const r = await write({ summary: "ok", claims: [claim({ entity: "Pipedrive", attribute: "price", value: "$45/month", source: 2 })] }, { results });
+    expect(r.ops).toEqual([]);
+    expect(r.rejected).toEqual([expect.objectContaining({ field: "claim", reason: REASON })]);
+    expect(ops()).toEqual(["rejected"]);
+    expect(claimRows()).toBe(before);
+  });
+
+  it("the same claim citing a page that names the vendor is written", async () => {
+    const r = await write({ summary: "ok", claims: [claim({ entity: "Render", attribute: "price", value: "$6/month", source: 1 })] }, {
+      results: new Map([[1, { url: "https://render.com/pricing", title: "Render Pricing", snippet: "$6" }]]),
+    });
+    expect(r.ops.map((o) => o.op)).toEqual(["add"]);
+  });
+
+  it("an Unchanged row whose source is about someone else does not TOUCH the claim", async () => {
+    const before = neonClaim().last_verified_at;
+    const r = await write({ summary: "ok", claims: [] }, { verify: true, results, knownClaims: known(), answerText: table("Unchanged", 2) });
+    expect(r.ops).toEqual([]);
+    expect(r.rejected).toEqual([expect.objectContaining({ field: "table", reason: REASON })]);
+    expect(neonClaim().last_verified_at).toBe(before);
+  });
+
+  it("a Differs row with a mismatched source does not SUPERSEDE, even when the extractor cites a good page", async () => {
+    const r = await write(
+      { summary: "ok", claims: [claim({ value: "Launch plan, $24/month", source: 1 })] },
+      { verify: true, results, knownClaims: known(), answerText: table("Differs now (timing unknown)", 2) },
+    );
+    expect(r.ops).toEqual([]);
+    expect(r.rejected.map((x) => x.reason)).toEqual(expect.arrayContaining([REASON]));
+    expect((db.prepare("SELECT status, value FROM claims WHERE entity = 'Neon'").all() as { status: string }[]).map((c) => c.status)).toEqual(["current"]);
+  });
+
+  it("a row citing a good source and a bad one still counts (any one source about the item is enough)", async () => {
+    const r = await write({ summary: "ok", claims: [] }, { verify: true, results, knownClaims: known(), answerText: "| Item | Status | Source |\n|---|---|---|\n| Neon | Unchanged | [1][2] |" });
+    expect(r.ops.map((o) => o.op)).toEqual(["touch"]);
+  });
+
+  it("every skip is logged to memory_writes as rejected, which the drawer shows as skipped", async () => {
+    await write({ summary: "ok", claims: [claim({ entity: "Pipedrive", attribute: "price", value: "$45/month", source: 2 })] }, { results });
+    const row = memoryWritesForTurn(db, input.turnId).find((w) => w.op === "rejected");
+    expect(JSON.parse(row?.detail_json ?? "{}")).toMatchObject({ reason: REASON });
+    expect(labelWrite(row!).label).toBe("skipped");
+  });
+
+  it("without results the check is off (direct callers and old tests are unaffected)", async () => {
+    const r = await write({ summary: "ok", claims: [claim({ entity: "Pipedrive", attribute: "price", value: "$45/month", source: 2 })] });
+    expect(r.ops.map((o) => o.op)).toEqual(["add"]);
+  });
+});
+

@@ -11,7 +11,7 @@ let db: Db;
 beforeEach(() => {
   db = openDb(":memory:");
 });
-const app = (model = textModel(["hello"])) => createApp({ db, models: { main: model, small: objectModel(emptyExtraction) }, now: () => NOW, search: noSearch, maxSteps: 4 });
+const app = (model = textModel(["hello"])) => createApp({ db, models: { main: model, small: objectModel(emptyExtraction) }, now: () => NOW, search: noSearch, maxSteps: 4, retry: { sleep: async () => undefined, rand: () => 1 } });
 const post = (a: ReturnType<typeof app>, body: unknown) =>
   a.request("/api/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 const ok = { threadId: ID, message: { text: "hi" }, timezone: "Asia/Kolkata" };
@@ -44,6 +44,18 @@ describe("POST /api/chat", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/event-stream");
     expect(await res.text()).toContain("hello");
+  });
+
+  it("sending twice from the same (blank-state) thread id reuses that thread and never creates another", async () => {
+    const a = app();
+    await (await post(a, ok)).text();
+    await (await post(a, { ...ok, message: { text: "second question" } })).text();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(db.prepare("SELECT count(*) AS n FROM threads").get()).toEqual({ n: 1 });
+    expect(listMessages(db, ID).map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    // The thread's history is what a remounted Chat loads: both turns are there.
+    const res = await a.request(`/api/threads/${ID}/messages`);
+    expect(((await res.json()) as { messages: unknown[] }).messages).toHaveLength(4);
   });
 
   it("a provider failure is a 200 stream carrying a readable error, not a crash", async () => {

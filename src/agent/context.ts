@@ -10,6 +10,7 @@ import {
 } from "../db/memoryRepo";
 import { clip, escapeUrl } from "../lib/escape";
 import { formatDay, localDate, localParts } from "../lib/tz";
+import { hasBackReference } from "./recallPolicy";
 import { buildDynamicBlock } from "./prompts";
 import type { RecallPlan, RecallRule } from "./recallPolicy";
 import type { TimeRef } from "./time";
@@ -54,7 +55,13 @@ export interface ContextTrace {
   ambiguous: string[];
   sinceDate?: string;
   /** `turns`: recalled with their text. `inThreadTurns`: already in the R0 window, so only their claims are shown. */
-  memoryIds: { turns: string[]; inThreadTurns: string[]; claims: string[] };
+  memoryIds: {
+    turns: string[];
+    inThreadTurns: string[];
+    claims: string[];
+    /** The claims as they stood when recalled (status may change later), for the "why?" drawer. */
+    claimsAtRecall: { entity: string; attribute: string; value: string; status: string; said: string }[];
+  };
   omittedTurns: number;
   memoryChars: number;
 }
@@ -217,6 +224,30 @@ export function buildContext(db: Db, input: ContextInput): BuiltContext {
   );
   const memory = renderWithinCaps(kept, empties, claims, history, tz);
   const domains = recheckDomains(memory.shown);
+  const claimById = new Map(claims.map((c) => [c.id, c]));
+  const claimsAtRecall = memory.claimIds.flatMap((id) => {
+    const c = claimById.get(id);
+    return c ? [{ entity: c.entity, attribute: c.attribute, value: c.value, status: c.status, said: c.observed_at.slice(0, 10) }] : [];
+  });
+
+  // A bare "since" after an ambiguous weekday ("On Monday … anything shipped since?") has no single date to
+  // search from. Without this line the model picks one silently (item 2).
+  const hasExplicitSince = plan.dated.some((r) => r.since);
+  if (!hasExplicitSince && ambiguous.length > 0 && /\bsince\b/i.test(input.message)) {
+    dateLines.push(
+      `- "since" refers to ${ambiguous.map((t) => `"${clip(t, 60)}"`).join(", ")}, which is ambiguous, so there is no since date. Before listing anything as shipped, state which date you assumed, or ask which one was meant.`,
+    );
+  }
+
+  // The user leans on earlier chat content, nothing was recalled, and this chat has no earlier turns either:
+  // without this line the model tends to run a generic search instead (A15).
+  const noRecord =
+    hasBackReference(input.message) && memory.turnIds.length === 0 && memory.inThreadTurnIds.length === 0 && windowSeqs.size <= 1;
+  const notes = noRecord
+    ? [
+        "No record found: the user refers to earlier conversation content, but nothing on that topic is in <memory> or in this chat. Say what you have no record of and ask for the missing details. Do not search for it or guess it.",
+      ]
+    : [];
 
   const block = buildDynamicBlock({
     now,
@@ -227,6 +258,7 @@ export function buildContext(db: Db, input: ContextInput): BuiltContext {
     ...(plan.verify
       ? { recheck: { items: memory.shown.map((s) => `${clip(s.entity, LABEL_MAX)} — ${clip(s.attribute, LABEL_MAX)}`), domains } }
       : {}),
+    ...(notes.length > 0 ? { notes } : {}),
     ...(memory.text ? { memory: memory.text } : {}),
   });
 
@@ -238,7 +270,7 @@ export function buildContext(db: Db, input: ContextInput): BuiltContext {
       resolvedDates,
       ambiguous,
       ...(sinceDate ? { sinceDate } : {}),
-      memoryIds: { turns: memory.turnIds, inThreadTurns: memory.inThreadTurnIds, claims: memory.claimIds },
+      memoryIds: { turns: memory.turnIds, inThreadTurns: memory.inThreadTurnIds, claims: memory.claimIds, claimsAtRecall },
       omittedTurns: memory.omitted,
       memoryChars: memory.text.length,
     },

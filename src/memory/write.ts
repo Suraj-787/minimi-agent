@@ -5,6 +5,7 @@ import { insertMemoryWrite, insertTurnSummary } from "../db/memoryRepo";
 import { isoDayFromMs } from "../lib/clock";
 import { errorFields, log } from "../lib/log";
 import { localDate } from "../lib/tz";
+import { sourceMentionsVendor, type ResultText } from "../agent/answerChecks";
 import { extractTurnMemory, type Extraction } from "./extract";
 import { claimKey, normalizeKeyPart } from "./claimKey";
 import { reconcileClaims, touchVerified, type ReconcileOp, type ValidClaim } from "./reconcile";
@@ -14,6 +15,8 @@ import { parseVerifyTable, statusByClaim, type VerifyRow } from "./verifyTable";
 export const SUMMARY_MAX = 400;
 export const CLAIMS_MAX = 12;
 const REJECTED_TEXT_MAX = 120;
+/** The reason logged when a cited source is about something else (shown as "skipped" in the drawer). */
+export const SOURCE_NOT_ABOUT_ITEM = "source doesn't mention the item";
 
 export interface MemoryWriterDeps {
   db: Db;
@@ -34,6 +37,11 @@ export interface TurnMemoryInput {
   answerText: string;
   /** Every source returned this turn, with its [n]. A claim's source must be one of these. */
   sources: ReadonlyArray<{ n: number; url: string }>;
+  /**
+   * This turn's results by [n] (url, title, snippet). With it, a claim or table row whose cited source does not
+   * name the item's vendor is kept out of the ledger (D57). Omitted: no such check.
+   */
+  results?: ReadonlyMap<number, ResultText>;
   /** Claims recalled into this turn's prompt; their labels are offered for reuse (D28). */
   knownClaims: ReadonlyArray<{ id: string; entity: string; attribute: string; value: string }>;
   /** Verify turn: the answer's table decides what the ledger may do with each recalled claim (D43). */
@@ -157,6 +165,9 @@ export async function writeTurnMemory(deps: MemoryWriterDeps, input: TurnMemoryI
       if (raw.source === null) return reject("claim", "unsourced", label);
       const sourceUrl = urlByN.get(raw.source);
       if (!sourceUrl) return reject("claim", "source not from this turn", label);
+      // The source this claim cites must be about its item: a competitor's blog cannot back another vendor's price.
+      const cited = input.results?.get(raw.source);
+      if (cited && !sourceMentionsVendor(parsed.data.entity, cited)) return reject("claim", SOURCE_NOT_ABOUT_ITEM, label);
       for (const field of ["entity", "attribute", "value"] as const) {
         const scan = scanText(parsed.data[field], urls);
         if (!scan.ok) return reject(field, scan.reason, parsed.data[field]);
@@ -178,6 +189,18 @@ export async function writeTurnMemory(deps: MemoryWriterDeps, input: TurnMemoryI
       const entity = normalizeKeyPart(c.entity).split(" ")[0] ?? "";
       heldEntity.set(entity, [...(heldEntity.get(entity) ?? []), row?.status ?? "none"]);
       if (!row) continue;
+      // The row's own citations must include one that is about the item; otherwise nothing is written for this
+      // claim: no touch, no new value (D57). A row citing several sources passes if any one of them does.
+      const cites = row.sources.flatMap((n) => {
+        const r = input.results?.get(n);
+        return r ? [r] : [];
+      });
+      if (cites.length > 0 && !cites.some((r) => sourceMentionsVendor(c.entity, r))) {
+        held.set(claimKey(c.entity, c.attribute), SOURCE_NOT_ABOUT_ITEM);
+        heldEntity.set(entity, [...(heldEntity.get(entity) ?? []).slice(0, -1), "unverified"]);
+        reject("table", SOURCE_NOT_ABOUT_ITEM, row.item);
+        continue;
+      }
       if (row.status === "unchanged") {
         held.set(claimKey(c.entity, c.attribute), "table says Unchanged");
         // Unchanged still needs evidence from this turn, like any write (D29).

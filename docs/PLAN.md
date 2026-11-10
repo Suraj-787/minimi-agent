@@ -78,12 +78,15 @@ accepts every line in `tests/fixtures/clean-claims.txt`; A2, A3, A4 from SPEC §
 after a verify turn with a changed value, the DB shows the old claim `superseded` and linked to the new one.
 
 ## Phase 5 — Reliability, speed, observability, memory UI
-- [ ] `lib/retry.ts` (429/5xx backoff + jitter) around model calls; user-visible retry status
-- [ ] Dev LLM cache middleware (`DEV_LLM_CACHE=1`)
-- [ ] Provider-failure path: both search providers down → caveated answer
-- [ ] `/api/debug/:turnId` + "why?" drawer (intent, dates, recall rules, memory injected, queries, latencies)
-- [ ] `/api/memory*` endpoints + **Memory panel** (claims by day, old→new chain, forget claim / forget chat)
-- [ ] Measure: context build ms, time to first token, total; log one line per turn
+- [x] `lib/retry.ts` (429/5xx backoff + jitter) around model calls; user-visible retry status
+- [x] Dev LLM cache middleware (`DEV_LLM_CACHE=1`)
+- [x] Provider-failure path: both search providers down → caveated answer
+- [x] `/api/debug/:turnId` + "why?" drawer (intent, dates, recall rules, memory injected, queries, latencies)
+- [x] `/api/memory*` endpoints + **Memory panel** (claims by day, old→new chain, forget claim / forget chat)
+- [x] Measure: context build ms, first status, time to first token, total; log one line per turn
+- [x] Browser-test fixes (D50–D52): no-record rule, shipped-since check, drawer detail, [n]-only citations; eval cases A15, A16
+- [x] Second browser test (D54–D56): same-day evidence label, source-matches-item check, Chat stays mounted behind the Memory tab; eval cases A17, A18
+- [x] Prompt tweak (D58): vendor page first for prices, "reported" vs "shipped"; soft eval checks (`softChecks`), eval cases A19, A20; ledger skips rows whose source is not about the item (D57); soft `verifyStatusContradiction` check (D59)
 
 **Done when:** a simulated 429 (mock) retries and then succeeds; killing the Exa key falls back to Tavily;
 forgetting a claim removes it from the next turn's recall (test); the debug drawer shows a full trace; first-token latency is logged.
@@ -94,9 +97,16 @@ forgetting a claim removes it from the next turn's recall (test); the debug draw
 - [ ] Deterministic checks from `checks` (searched?, cited?, mustMention, mustNotMention, resolved dates,
   verify table, recallRules, memoryInjected, claimState)
 - [ ] `eval/judge.ts`: small model scores the rubric 1–5 with a reason (structured output)
-- [ ] Write `eval/results.md` (table: case, pass/fail per check, judge score, latency)
+- [ ] Write `eval/results.md` (table: case, pass/fail per check, judge score, latency), uncached runs only (see below)
 
-**Done when:** `npm run eval` finishes on the free tier (with DEV_LLM_CACHE) and results.md is committed.
+- [ ] Real model by default: the runner never installs the dev LLM cache on its own and ignores `DEV_LLM_CACHE` in the env.
+  `npm run eval -- --cache` is the only way to turn it on (development iteration only); it prints a visible banner at start
+  and in the summary ("CACHED RUN: model answers replayed from llm_cache, not a valid result").
+- [ ] `eval/results.md` is written only from an uncached run; with `--cache` the runner refuses to write it (prints where it
+  would have written, exits non-zero if `--write-results` is also given) and writes nothing.
+
+**Done when:** `npm run eval` (uncached, real model) finishes on the free tier and results.md is committed; `--cache` shows the
+banner and never touches results.md (test).
 
 ## Phase 7 — Polish + docs (+ stretch)
 - [ ] DESIGN.md final (one page): fill in real numbers from traces/evals

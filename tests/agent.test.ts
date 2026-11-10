@@ -13,7 +13,7 @@ let db: Db;
 beforeEach(() => {
   db = openDb(":memory:");
 });
-const deps = (main: AgentDeps["models"]["main"]): AgentDeps => ({ db, models: { main, small: objectModel(emptyExtraction) }, now: () => NOW, search: noSearch, maxSteps: 4 });
+const deps = (main: AgentDeps["models"]["main"]): AgentDeps => ({ db, models: { main, small: objectModel(emptyExtraction) }, now: () => NOW, search: noSearch, maxSteps: 4, retry: { sleep: async () => undefined, rand: () => 1 } });
 const input = (message: string) => ({ threadId: TID, message, tz: "Asia/Kolkata" });
 
 async function readAll(stream: ReadableStream<unknown>): Promise<unknown[]> {

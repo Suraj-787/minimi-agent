@@ -2,8 +2,10 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { readableError } from "../lib/api";
+import { buildChatBody } from "../lib/chatRequest";
 import { linkCitations, sourcesOf, type Source } from "../lib/citations";
 import { Markdown } from "./Markdown";
+import { WhyDrawer } from "./WhyDrawer";
 
 interface Props {
   threadId: string;
@@ -18,11 +20,7 @@ const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 // text is exactly what the user typed.
 const transport = new DefaultChatTransport({
   api: "/api/chat",
-  prepareSendMessagesRequest: ({ id, messages }) => {
-    const last = messages[messages.length - 1];
-    const text = last?.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("") ?? "";
-    return { body: { threadId: id, message: { text }, timezone } };
-  },
+  prepareSendMessagesRequest: ({ id, messages }) => ({ body: buildChatBody(id, messages, timezone) }),
 });
 
 function textOf(m: UIMessage): string {
@@ -71,6 +69,7 @@ export function Chat({ threadId, initialMessages, onTurnEnd }: Props) {
     },
   });
   const [input, setInput] = useState("");
+  const [whyTurn, setWhyTurn] = useState<string | undefined>();
   const bottom = useRef<HTMLDivElement>(null);
   const busy = status === "submitted" || status === "streaming";
   // Hide the status once the answer text starts, so "Searching: …" never lingers over a streaming reply.
@@ -117,6 +116,11 @@ export function Chat({ threadId, initialMessages, onTurnEnd }: Props) {
               <div key={m.id} className="max-w-[95%]">
                 <Markdown text={linkCitations(text, sources)} />
                 <SourcesList sources={sources} />
+                {!(busy && m === last) && (
+                  <button onClick={() => setWhyTurn(m.id)} className="mt-1 text-xs text-neutral-400 hover:text-neutral-700">
+                    why?
+                  </button>
+                )}
               </div>
             );
           })}
@@ -152,6 +156,7 @@ export function Chat({ threadId, initialMessages, onTurnEnd }: Props) {
           </button>
         </div>
       </div>
+      {whyTurn && <WhyDrawer turnId={whyTurn} onClose={() => setWhyTurn(undefined)} />}
     </section>
   );
 }

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import type { UIMessage } from "ai";
 import { Chat } from "./components/Chat";
+import { MemoryPanel } from "./components/MemoryPanel";
+import { ViewSwitch } from "./components/ViewSwitch";
 import { Sidebar } from "./components/Sidebar";
 import { deleteThread, fetchMessages, fetchThreads, type ThreadSummary } from "./lib/api";
 
@@ -15,6 +17,7 @@ export function App() {
   const [threadId, setThreadId] = useState<string>(() => idFromHash() ?? crypto.randomUUID());
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [initial, setInitial] = useState<UIMessage[] | undefined>();
+  const [view, setView] = useState<"chat" | "memory">("chat");
   const [loadError, setLoadError] = useState<string | undefined>();
 
   const refreshThreads = useCallback(() => {
@@ -60,17 +63,25 @@ export function App() {
       <Sidebar
         threads={threads}
         activeId={threadId}
-        onSelect={setThreadId}
-        onNew={() => setThreadId(crypto.randomUUID())}
+        onSelect={(id) => (setView("chat"), setThreadId(id))}
+        onNew={() => (setView("chat"), setThreadId(crypto.randomUUID()))}
         onDelete={remove}
+        view={view}
+        onView={setView}
       />
-      {loadError ? (
-        <p className="m-auto text-red-700">{loadError}</p>
-      ) : initial ? (
-        <Chat key={threadId} threadId={threadId} initialMessages={initial} onTurnEnd={refreshThreads} />
-      ) : (
-        <p className="m-auto text-neutral-500">Loading…</p>
-      )}
+      <ViewSwitch
+        view={view}
+        memory={<MemoryPanel />}
+        chat={
+          loadError ? (
+            <p className="m-auto text-red-700">{loadError}</p>
+          ) : initial ? (
+            <Chat key={threadId} threadId={threadId} initialMessages={initial} onTurnEnd={refreshThreads} />
+          ) : (
+            <p className="m-auto text-neutral-500">Loading…</p>
+          )
+        }
+      />
     </div>
   );
 }

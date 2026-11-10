@@ -5,7 +5,9 @@ CREATE TABLE IF NOT EXISTS threads (
   id         TEXT PRIMARY KEY,
   title      TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,   -- UTC ISO
-  updated_at TEXT NOT NULL    -- UTC ISO
+  updated_at TEXT NOT NULL,   -- UTC ISO
+  -- "Forget this chat" (Memory panel): turns with seq <= this are never recalled across threads.
+  memory_forgotten_seq INTEGER
 );
 
 -- seq (not the implicit rowid) is the FTS content key: rowids of tables without an INTEGER
@@ -100,6 +102,7 @@ CREATE TABLE IF NOT EXISTS traces (
   queries_json        TEXT,
   provider            TEXT,
   context_ms          INTEGER,
+  first_status_ms     INTEGER,   -- first transient status ("Searching…", retry notice)
   first_token_ms      INTEGER,
   total_ms            INTEGER,
   usage_json          TEXT,

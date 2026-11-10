@@ -17,7 +17,7 @@ async function main(): Promise<void> {
   const db = openDb(e.DB_PATH);
   const deps = {
     db,
-    models: getModels(e),
+    models: getModels(e, { cache: { db, now } }),
     now,
     search: createSearchFromEnv(e, db, now),
     maxSteps: e.MAX_STEPS,

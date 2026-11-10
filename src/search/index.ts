@@ -18,6 +18,8 @@ import {
 export const MAX_RESULTS_PER_CALL = 8;
 const TTL_SHORT_MS = 60 * 60 * 1000;
 const TTL_LONG_MS = 24 * 60 * 60 * 1000;
+/** A `fresh` query is re-read from the network, except within this window: re-sending after a failed turn must not redo every live crawl (D47). */
+const TTL_FRESH_MS = 2 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = 6000;
 /** `fresh` makes Exa live-crawl pages, which routinely takes longer than 6 s (D40). */
 const DEFAULT_FRESH_TIMEOUT_MS = 15_000;
@@ -56,7 +58,7 @@ export interface SearchOutcome {
   /** `query`: the query that first found the result, so verify mode can date it against that item's claim (D41). */
   results: Array<SearchResult & { isNew: boolean; query: string }>;
   /** Provider that answered each query (or "cache:<provider>"), for the trace. */
-  sources: Array<{ query: string; provider: ProviderName; cached: boolean }>;
+  sources: Array<{ query: string; provider: ProviderName; cached: boolean; failedProviders?: ProviderName[] }>;
   /** Queries no provider could answer. */
   failed: string[];
   /** True only when every query failed: the model should say it could not search. */
@@ -206,23 +208,28 @@ export function createSearch(deps: SearchDeps): Search {
   async function runQuery(
     q: ProviderQuery,
     outer?: AbortSignal,
-  ): Promise<{ results: RawResult[]; provider: ProviderName; cached: boolean } | undefined> {
+  ): Promise<{ results: RawResult[]; provider: ProviderName; cached: boolean; failedProviders: ProviderName[] } | undefined> {
     const ttl = ttlMs(q);
+    const failedProviders: ProviderName[] = [];
     for (const provider of providers) {
       const key = cacheKey(provider.name, q.query, q);
-      if (!q.fresh) {
-        const hit = readCache(key);
-        if (hit) return { results: hit, provider: provider.name, cached: true };
-      }
+      // Fresh queries use their own short-lived key, so they never read the 1 h / 24 h entries.
+      const freshKey = `fresh:${key}`;
+      const hit = readCache(q.fresh ? freshKey : key);
+      if (hit) return { results: hit, provider: provider.name, cached: true, failedProviders };
       try {
         const limit = q.fresh ? freshTimeoutMs : timeoutMs;
         const signal = outer ? AbortSignal.any([outer, AbortSignal.timeout(limit)]) : AbortSignal.timeout(limit);
         const results = await provider.search(q, signal);
         // `fresh` results are still worth storing for non-fresh callers, but never read back for fresh ones.
-        if (results.length > 0) writeCache(key, provider.name, results, ttl);
-        return { results, provider: provider.name, cached: false };
+        if (results.length > 0) {
+          writeCache(key, provider.name, results, ttl);
+          if (q.fresh) writeCache(freshKey, provider.name, results, TTL_FRESH_MS);
+        }
+        return { results, provider: provider.name, cached: false, failedProviders };
       } catch (err) {
         if (outer?.aborted) throw err;
+        failedProviders.push(provider.name);
         log.warn("search provider failed", { provider: provider.name, ...errorFields(err) });
       }
     }
@@ -261,7 +268,9 @@ export function createSearch(deps: SearchDeps): Search {
         results,
         sources: jobs.flatMap((job, i) => {
           const s = settled[i];
-          return s ? [{ query: job.label, provider: s.provider, cached: s.cached }] : [];
+          return s
+            ? [{ query: job.label, provider: s.provider, cached: s.cached, ...(s.failedProviders.length ? { failedProviders: s.failedProviders } : {}) }]
+            : [];
         }),
         failed,
         allFailed: jobs.length > 0 && answered.length === 0,

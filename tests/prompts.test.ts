@@ -30,7 +30,7 @@ describe("search discipline", () => {
       "- Unchanged:",
       "- Differs now (timing unknown):",
       "- Changed after <date>: ONLY when a dated announcement, changelog entry, release note or news item published after the claim was said reports the change",
-      '- Already outdated when asked: dated evidence labelled "on or before the ... claim date" shows a different value',
+      '- Already outdated when asked: dated evidence labelled "before the ... claim date" (strictly earlier than the claim) shows a different value',
       "A row with such evidence is always this status, never Changed.",
       "- Couldn't verify:",
     ]) {
@@ -66,3 +66,67 @@ describe("search discipline", () => {
     expect(SYSTEM_PROMPT).toContain('Say "introduced" or "launched" only with a source dated after the claim date');
   });
 });
+
+describe("Phase 5 browser-test rules", () => {
+  it("missing earlier content: say what has no record, ask for details, never substitute a generic search or invent", () => {
+    expect(SYSTEM_PROMPT).toContain("# Missing earlier content");
+    expect(SYSTEM_PROMPT).toContain("say plainly what you have no record of and ask for the missing details, for example the names of the tools");
+    expect(SYSTEM_PROMPT).toContain("Do not substitute a generic web search for the missing content, and never invent or guess the items");
+  });
+
+  it('"Shipped since" lists only items dated after the date; an ambiguous weekday is stated or asked', () => {
+    expect(SYSTEM_PROMPT).toContain("list an item only if its own source date is after <date>");
+    expect(SYSTEM_PROMPT).toContain("If <date> comes from an ambiguous weekday, say which date you assumed, or ask.");
+    expect(SYSTEM_PROMPT).toContain("state the date you assumed in your first line, or ask which one the user meant");
+  });
+
+  it("a dated result that states the new value beats undated ones; its label decides Already outdated", () => {
+    expect(SYSTEM_PROMPT).toContain("rely on a dated result that states the new value over undated pages");
+    expect(SYSTEM_PROMPT).toContain('if it says "before the ... claim date", the status is Already outdated when asked');
+  });
+
+  it("citations are [n] only, never markdown links or bare URLs", () => {
+    expect(SYSTEM_PROMPT).toContain("Cite ONLY as [n]. Never write a markdown link like [text](url), a bare URL");
+  });
+
+  it("notes render inside <context>, and the system prompt stays free of dates and times", () => {
+    const block = buildDynamicBlock({ now: new Date("2026-11-12T05:30:00Z"), tz: "Asia/Kolkata", notes: ["No record found: x"] });
+    expect(block.indexOf("No record found: x")).toBeLessThan(block.indexOf("</context>"));
+    expect(SYSTEM_PROMPT).not.toMatch(/\b20\d{2}\b/);
+    expect(SYSTEM_PROMPT).not.toMatch(/\d{1,2}:\d{2}/);
+  });
+});
+
+describe("evidence quality rules (D54, D55)", () => {
+  it("same-day evidence cannot be ordered: Differs now, never Already outdated or Changed", () => {
+    expect(SYSTEM_PROMPT).toContain('"(same day as the <item> claim date <date>)"');
+    expect(SYSTEM_PROMPT).toContain('Evidence labelled "same day as the ... claim date" cannot be ordered against the claim');
+    expect(SYSTEM_PROMPT).toContain("never Already outdated and never Changed");
+    expect(SYSTEM_PROMPT).not.toContain("on or before the ... claim date");
+  });
+
+  it("a competitor's blog or unrelated page cannot be another vendor's source", () => {
+    expect(SYSTEM_PROMPT).toContain("A row's source must be about that row's own item.");
+    expect(SYSTEM_PROMPT).toContain("cannot be the source for another vendor's price or release");
+    expect(SYSTEM_PROMPT).toContain("the row is Couldn't verify");
+  });
+});
+
+describe("source order and shipped wording (D58)", () => {
+  it("price rows cite the vendor's own page first; a dated third-party page only when it is missing/unclear or orders the evidence", () => {
+    expect(SYSTEM_PROMPT).toContain("For a price row, cite the vendor's own page first when it states the price; an undated vendor page is fine.");
+    expect(SYSTEM_PROMPT).toContain("Use a dated third-party page only when the vendor page is missing or unclear, or to order the evidence");
+  });
+
+  it('"Shipped since" says "reported <date>" unless the date is from the vendor\'s own announcement, notes or changelog', () => {
+    expect(SYSTEM_PROMPT).toContain('write "reported <date>" unless the date comes from the vendor\'s own announcement, release notes or changelog');
+    expect(SYSTEM_PROMPT).toContain('Never write "shipped <date>" for a news recap, a blog roundup or an aggregator');
+  });
+
+  it("the earlier Shipped-since wording is unchanged and the prompt stays free of dates and times", () => {
+    expect(SYSTEM_PROMPT).toContain('add "Shipped since <date>:" with one line per launch (item, date, [n]), or "Nothing found dated after <date>."');
+    expect(SYSTEM_PROMPT).not.toMatch(/\b20\d{2}\b/);
+    expect(SYSTEM_PROMPT).not.toMatch(/\d{1,2}:\d{2}/);
+  });
+});
+

@@ -205,7 +205,7 @@ describe("memory write path, end to end (mocked models and search)", () => {
           { entity: "Render", attribute: "cheapest paid Postgres plan", value: "Less than 1 CPU, $6/month", source: 2, asOf: null },
           { entity: "Render", attribute: "entry managed instance", value: "Basic, $7/month", source: 2, asOf: null },
           // Couldn't verify: nothing is written.
-          { entity: "Supabase", attribute: "cheapest paid plan price", value: "Pro plan, $29/month", source: 1, asOf: null },
+          { entity: "Supabase", attribute: "cheapest paid plan price", value: "Pro plan, $29/month", source: 4, asOf: null },
           // Already outdated: the value goes through; reconcile's older-evidence guard then applies (DESIGN.md).
           { entity: "Bun", attribute: "latest stable major.minor", value: "1.2", source: 3, asOf: "2026-08-20" },
         ],
@@ -214,6 +214,7 @@ describe("memory write path, end to end (mocked models and search)", () => {
         { title: "Neon Pricing", url: "https://neon.com/pricing", publishedDate: "2026-11-04", snippet: "Pay-as-you-go", query: "Neon pricing" },
         { title: "Render Pricing", url: "https://render.com/pricing", publishedDate: "2026-11-10", snippet: "Basic-256mb $6", query: "Render Postgres pricing" },
         { title: "Bun v1.2.21", url: "https://bun.sh/blog/bun-v1.2.21", publishedDate: "2026-08-20", snippet: "Bun v1.2.21", query: "Bun latest version" },
+        { title: "Supabase Pricing", url: "https://supabase.com/pricing", publishedDate: "2026-11-11", snippet: "Pro plan $29", query: "Supabase pricing" },
       ],
     });
 
@@ -221,7 +222,7 @@ describe("memory write path, end to end (mocked models and search)", () => {
 
     // Fix 1: no "since" in the message, yet every result is dated against its own claim.
     const step1 = JSON.stringify(main.doStreamCalls[1]?.prompt);
-    expect(step1).toContain("published 2026-08-20 (on or before the Bun claim date 2026-11-03)");
+    expect(step1).toContain("published 2026-08-20 (before the Bun claim date 2026-11-03)");
     expect(step1).toContain("published 2026-11-04 (after the Neon claim date 2026-11-03)");
 
     // Fix 2: Unchanged → TOUCH only; Couldn't verify → nothing; Differs → the new value.
@@ -303,10 +304,154 @@ describe("memory write path, end to end (mocked models and search)", () => {
     const db = seededDb();
     const small = objectModel(() => ({ summary: "x", claims: [] }));
     const { failingModel } = await import("./helpers/mockModel");
-    const deps: AgentDeps = { db, models: { main: failingModel(500), small }, now: () => SEED_NOW, search: fixedSearch([]), maxSteps: 4 };
+    const deps: AgentDeps = { db, models: { main: failingModel(500), small }, now: () => SEED_NOW, search: fixedSearch([]), maxSteps: 4, retry: { sleep: async () => undefined, rand: () => 1 } };
     const run = await runAgent(deps, { threadId: TID_A, message: "hi", tz: IST });
     await run.done;
     expect(small.doGenerateCalls).toHaveLength(0);
     expect(memoryWritesForTurn(db, run.assistantMessageId)).toEqual([]);
   });
 });
+
+describe("evidence quality in verify answers (D54, D55)", () => {
+  const TABLE = (row: string) =>
+    ["| Item | Said (date) | Then → Now | Status | Evidence date | Source |", "|---|---|---|---|---|---|", row, "", "Supabase differs now: as of 2026-11-12."].join("\n");
+  const steps = (answer: string): Step[] => [
+    { toolCall: { name: "web_search", input: { queries: ["Supabase pricing"], fresh: true } } },
+    { toolCall: { name: "web_search", input: { queries: ["Supabase pricing again"], fresh: true } } },
+    { text: answer },
+  ];
+  const errorsOf = (db: Db, id: string): Array<Record<string, unknown>> =>
+    JSON.parse((db.prepare("SELECT errors_json FROM traces WHERE turn_id = ?").get(id) as { errors_json: string | null }).errors_json ?? "[]");
+
+  it("a result dated the SAME day as the claim is labelled 'same day as', not 'before'", async () => {
+    const { main, turn } = setup({
+      steps: steps("x [1]"),
+      extraction: () => ({ summary: "s", claims: [] }),
+      pages: [{ ...SUPABASE_PAGE, publishedDate: "2026-11-03", query: "Supabase pricing" }],
+    });
+    await turn(TID_A, "Last Tuesday I asked you about Postgres hosting. Has Supabase's price changed since then?");
+    const step1 = JSON.stringify(main.doStreamCalls[1]?.prompt);
+    expect(step1).toContain("published 2026-11-03 (same day as the Supabase claim date 2026-11-03)");
+    expect(step1).not.toContain("(before the Supabase claim date");
+  });
+
+  it("records a cited source that never names the row's vendor (the A4 Pipedrive/HubSpot blog)", async () => {
+    const blog: FixedResult = {
+      title: "How generative AI is reshaping CRMs",
+      url: "https://blog.hubspot.com/ai-crms",
+      publishedDate: "2026-11-09",
+      snippet: "Generative AI is changing sales software.",
+      query: "Supabase pricing",
+    };
+    const { db, turn } = setup({
+      steps: steps(TABLE("| Supabase Pro | 2026-11-03 | $25 → $29 | Already outdated when asked | 2026-11-03 | [1] |")),
+      // The extractor would happily record the new price from that blog.
+      extraction: () => ({
+        summary: "s",
+        claims: [{ entity: "Supabase", attribute: "cheapest paid plan price", value: "Pro plan, $29/month", source: 1, asOf: null }],
+      }),
+      pages: [blog],
+    });
+    const run = await turn(TID_A, "Last Tuesday I asked you about Postgres hosting. Has Supabase's price changed since then?");
+    expect(errorsOf(db, run.assistantMessageId)).toContainEqual({
+      verifySourceMismatch: [{ item: "Supabase Pro", n: 1, url: "https://blog.hubspot.com/ai-crms", vendor: "supabase" }],
+    });
+    // D57: the ledger is untouched and the skip is logged with its reason.
+    expect(claimsFor(db, "Supabase").map((c) => [c.value, c.status])).toEqual([["Pro plan, $25/month", "current"]]);
+    const skipped = memoryWritesForTurn(db, run.assistantMessageId)
+      .filter((w) => w.op === "rejected")
+      .map((w) => JSON.parse(w.detail_json ?? "{}").reason);
+    expect(skipped).toContain("source doesn't mention the item");
+    expect(memoryWritesForTurn(db, run.assistantMessageId).some((w) => ["add", "supersede", "touch"].includes(w.op))).toBe(false);
+  });
+
+  it("no mismatch when the cited page names the vendor", async () => {
+    const { db, turn } = setup({
+      steps: steps(TABLE("| Supabase Pro | 2026-11-03 | $25 → $29 | Differs now (timing unknown) | 2026-11-11 | [1] |")),
+      extraction: () => ({ summary: "s", claims: [] }),
+      pages: [{ ...SUPABASE_PAGE, query: "Supabase pricing" }],
+    });
+    const run = await turn(TID_A, "Last Tuesday I asked you about Postgres hosting. Has Supabase's price changed since then?");
+    expect(errorsOf(db, run.assistantMessageId).some((e) => "verifySourceMismatch" in e)).toBe(false);
+  });
+});
+
+describe("soft checks reach the trace (D58)", () => {
+  const errorsOf = (db: Db, id: string): Array<Record<string, unknown>> =>
+    JSON.parse((db.prepare("SELECT errors_json FROM traces WHERE turn_id = ?").get(id) as { errors_json: string | null }).errors_json ?? "[]");
+  const vendor: FixedResult = { title: "Supabase Pricing", url: "https://supabase.com/pricing", snippet: "Pro plan: $29/month per organization.", query: "Supabase pricing" };
+  const recap: FixedResult = { title: "Supabase price check", url: "https://dbnews.test/prices", publishedDate: "2026-11-10", snippet: "Supabase Pro is $29 per month.", query: "Supabase pricing" };
+  const answer = (cites: string, shipped = "") =>
+    ["| Item | Said (date) | Then → Now | Status | Evidence date | Source |", "|---|---|---|---|---|---|", `| Supabase Pro | 2026-11-03 | $25 → $29 | Differs now (timing unknown) | 2026-11-10 | ${cites} |`, "", `Supabase differs now: $25 → $29, as of 2026-11-12.${shipped}`].join("\n");
+  const run = async (text: string) => {
+    const { db, turn } = setup({
+      steps: [{ toolCall: { name: "web_search", input: { queries: ["Supabase pricing"], fresh: true } } }, { toolCall: { name: "web_search", input: { queries: ["Supabase pricing again"], fresh: true } } }, { text }],
+      extraction: () => ({ summary: "s", claims: [] }),
+      pages: [recap, vendor], // recap is [1], the vendor page is [2]
+    });
+    const r = await turn(TID_A, "Last Tuesday I asked you about Postgres hosting. Has Supabase's price changed since then?");
+    return errorsOf(db, r.assistantMessageId);
+  };
+
+  it("a third-party page cited before the vendor's price page is recorded as a soft warning", async () => {
+    const errors = await run(answer("[1][2]"));
+    expect(errors).toContainEqual({ softVendorPageNotFirst: [{ item: "Supabase Pro", firstCited: 1, vendorPage: 2 }] });
+  });
+
+  it("vendor page first: no warning", async () => {
+    expect((await run(answer("[2][1]"))).some((e) => "softVendorPageNotFirst" in e)).toBe(false);
+  });
+
+  it("'shipped <date>' backed by a recap is a soft warning; 'reported' is not", async () => {
+    const bad = await run(answer("[2]", "\n\nShipped since 2026-11-03:\n- Supabase shipped a price rise 2026-11-10 [1]"));
+    expect(bad.some((e) => "softShippedWording" in e)).toBe(true);
+    const ok = await run(answer("[2]", "\n\nShipped since 2026-11-03:\n- Supabase reported 2026-11-10 [1]"));
+    expect(ok.some((e) => "softShippedWording" in e)).toBe(false);
+  });
+});
+
+describe("verifyStatusContradiction reaches the trace (D59)", () => {
+  const errorsOf = (db: Db, id: string): Array<Record<string, unknown>> =>
+    JSON.parse((db.prepare("SELECT errors_json FROM traces WHERE turn_id = ?").get(id) as { errors_json: string | null }).errors_json ?? "[]");
+  const page = (publishedDate: string): FixedResult => ({
+    title: "Supabase Pricing",
+    url: "https://supabase.com/pricing",
+    publishedDate,
+    snippet: "Pro plan: $29/month per organization.",
+    query: "Supabase pricing",
+  });
+  const answer = (status: string) =>
+    ["| Item | Said (date) | Then → Now | Status | Evidence date | Source |", "|---|---|---|---|---|---|", `| Supabase Pro | 2026-11-03 | $25 → $29 | ${status} | 2026-11-01 | [1] |`, "", "Supabase differs now: as of 2026-11-12."].join("\n");
+  const run = async (publishedDate: string, status: string) => {
+    const { db, turn } = setup({
+      steps: [
+        { toolCall: { name: "web_search", input: { queries: ["Supabase pricing"], fresh: true } } },
+        { toolCall: { name: "web_search", input: { queries: ["Supabase pricing again"], fresh: true } } },
+        { text: answer(status) },
+      ],
+      extraction: () => ({ summary: "s", claims: [] }),
+      pages: [page(publishedDate)],
+    });
+    const r = await turn(TID_A, "Last Tuesday I asked you about Postgres hosting. Has Supabase's price changed since then?");
+    return errorsOf(db, r.assistantMessageId);
+  };
+
+  it("'Differs now' on evidence the tool labelled BEFORE the claim date is recorded", async () => {
+    expect(await run("2026-11-01", "Differs now (timing unknown)")).toContainEqual({
+      verifyStatusContradiction: [{ item: "Supabase Pro", status: "differs", n: 1, label: "before" }],
+    });
+  });
+
+  it("'Already outdated' on same-day evidence is recorded", async () => {
+    expect(await run("2026-11-03", "Already outdated when asked")).toContainEqual({
+      verifyStatusContradiction: [{ item: "Supabase Pro", status: "outdated", n: 1, label: "same" }],
+    });
+  });
+
+  it("consistent statuses record nothing", async () => {
+    expect((await run("2026-11-01", "Already outdated when asked")).some((e) => "verifyStatusContradiction" in e)).toBe(false);
+    expect((await run("2026-11-03", "Differs now (timing unknown)")).some((e) => "verifyStatusContradiction" in e)).toBe(false);
+    expect((await run("2026-11-10", "Changed after 2026-11-10")).some((e) => "verifyStatusContradiction" in e)).toBe(false);
+  });
+});
+

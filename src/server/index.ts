@@ -19,7 +19,7 @@ try {
   const db = openDb(e.DB_PATH);
   const app = createApp({
     db,
-    models: getModels(e),
+    models: getModels(e, { cache: { db, now } }),
     now,
     search: createSearchFromEnv(e, db, now),
     maxSteps: e.MAX_STEPS,

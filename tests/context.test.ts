@@ -10,7 +10,7 @@ import {
 import { recallPolicy } from "../src/agent/recallPolicy";
 import { resolveTimeRefs } from "../src/agent/time";
 import type { Db } from "../src/db/index";
-import { insertClaim, markSuperseded } from "../src/db/memoryRepo";
+import { forgetThreadMemory, insertClaim, markSuperseded } from "../src/db/memoryRepo";
 import { IST, SEED_NOW, addTurn, seededDb } from "./helpers/seed";
 
 let db: Db;
@@ -331,3 +331,54 @@ describe("phase 4: chains, in-window claims, re-check list", () => {
     expect(memoryOf(ctx)).toMatch(/^10:14 USER: Which managed Postgres host/m);
   });
 });
+
+describe("no record of earlier content (A15)", () => {
+  const SHORTLIST = "On Monday we shortlisted 5 CRM tools for a 20-person sales team. Has any of them changed pricing or shipped something big since?";
+
+  it("says nothing was found when the user leans on earlier chat and memory has nothing", () => {
+    // Forget the CRM chat exactly as the Memory panel does.
+    const thread = (db.prepare("SELECT id FROM threads WHERE title = ?").get("CRM shortlist for sales team") as { id: string }).id;
+    forgetThreadMemory(db, thread, SEED_NOW);
+    const ctx = build(SHORTLIST, { verify: true, windowSeqs: new Set([999]) });
+    expect(ctx.block).toContain("No record found:");
+    expect(ctx.block).toContain("Do not search for it or guess it.");
+    expect(ctx.recheck.claims).toEqual([]);
+    expect(ctx.trace.memoryIds.turns).toEqual([]);
+  });
+
+  it("does not say it when the shortlist chat is on record", () => {
+    const ctx = build(SHORTLIST, { verify: true, windowSeqs: new Set([999]) });
+    expect(ctx.block).not.toContain("No record found:");
+    expect(ctx.recheck.claims.length).toBeGreaterThan(0);
+  });
+
+  it("does not say it for an ordinary question, or inside a chat that has earlier turns", () => {
+    expect(build("What is the latest stable Node.js version?").block).not.toContain("No record found:");
+    expect(build("Which tools did we shortlist? I asked you earlier", { windowSeqs: new Set([1, 2, 3]) }).block).not.toContain("No record found:");
+  });
+});
+
+describe("bare since after an ambiguous weekday", () => {
+  it("has no since date and tells the model to state its assumption or ask", () => {
+    const ctx = build("On Monday we discussed the ferris wheel. Has anything shipped since?");
+    expect(ctx.trace.ambiguous).toEqual(["On Monday"]);
+    expect(ctx.trace.sinceDate).toBeUndefined();
+    expect(ctx.block).toContain("which is ambiguous, so there is no since date");
+    expect(ctx.block).toContain("state which date you assumed, or ask which one was meant");
+  });
+
+  it("an unambiguous day gives a since date and no such line", () => {
+    const ctx = build("On Monday we shortlisted CRM tools. Has anything shipped since?");
+    expect(ctx.trace.sinceDate).toBe("2026-11-09");
+    expect(ctx.block).not.toContain("no since date");
+  });
+});
+
+describe("claims at recall time", () => {
+  it("the trace keeps each recalled claim's status as it was when recalled", () => {
+    const ctx = build("What did I ask you on 3 November?");
+    expect(ctx.trace.memoryIds.claimsAtRecall.length).toBe(ctx.trace.memoryIds.claims.length);
+    expect(ctx.trace.memoryIds.claimsAtRecall[0]).toMatchObject({ status: "current" });
+  });
+});
+

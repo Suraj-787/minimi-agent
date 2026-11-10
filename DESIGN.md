@@ -47,6 +47,13 @@ an LLM intent router (adds latency; a regex is enough) · Postgres (setup fricti
 _TODO: eval pass rate, median time to first token, typical searches per turn — from `eval/results.md`._
 
 ## With another week
+- **Code-assigned verdicts: the model reports values and sources, code computes the status from dates.** Today the model picks
+  each row's status (Unchanged / Differs now / Changed after / Already outdated / Couldn't verify) from labels the code
+  wrote on each result, and code only *checks* it afterwards (`verifyStatusContradiction`, `verifySourceMismatch`,
+  `verifyTakeawayMissing`; all recorded in the trace, none rewrite the answer). The model should only report the then-value,
+  the now-value, and the source; the status then follows deterministically from the evidence date versus the claim date,
+  the source check and the value comparison, and the table is rendered from those verdicts. That removes a whole class of
+  model slips (A2's "Changed" on a pre-claim page, A4's same-day "Already outdated") instead of detecting them after the fact.
 - **Proactive re-checks:** periodically re-verify stored claims and nudge the user when one changes
   (minimi's product, in small form).
 - Source-quality ranking (official vendor pages > news > blogs) and confidence per claim.

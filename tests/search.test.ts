@@ -137,6 +137,34 @@ describe("cache", () => {
     expect(exa.calls.map((c) => c.fresh)).toEqual([undefined, true]);
   });
 
+  it("fresh results are reused for ~2 minutes (a re-send after a failed turn), then re-fetched (D47)", async () => {
+    const exa = provider("exa", returns([r("https://a.com/1")]));
+    const search = make([exa]);
+    await search.run({ queries: ["neon pricing"], fresh: true }, createTurnCounter());
+    clock = new Date(clock.getTime() + 90_000);
+    const again = await search.run({ queries: ["neon pricing"], fresh: true }, createTurnCounter());
+    expect(exa.calls).toHaveLength(1);
+    expect(again.sources[0]?.cached).toBe(true);
+    clock = new Date(clock.getTime() + 60_000); // 2.5 min after the first call
+    await search.run({ queries: ["neon pricing"], fresh: true }, createTurnCounter());
+    expect(exa.calls).toHaveLength(2);
+  });
+
+  it("a fresh query never reads the long-lived entry a non-fresh query wrote", async () => {
+    const exa = provider("exa", returns([r("https://a.com/1")]));
+    const search = make([exa]);
+    await search.run({ queries: ["neon pricing"] }, createTurnCounter());
+    await search.run({ queries: ["neon pricing"], fresh: true }, createTurnCounter());
+    expect(exa.calls).toHaveLength(2);
+  });
+
+  it("records which providers failed first, so the trace shows the fallback", async () => {
+    const exa = provider("exa", fails());
+    const tavily = provider("tavily", returns([r("https://a.com/1")]));
+    const out = await make([exa, tavily]).run({ queries: ["q"] }, createTurnCounter());
+    expect(out.sources).toEqual([{ query: "q", provider: "tavily", cached: false, failedProviders: ["exa"] }]);
+  });
+
   it("does not cache empty results", async () => {
     const exa = provider("exa", returns([]));
     const search = make([exa]);
@@ -152,7 +180,7 @@ describe("fallback", () => {
     const tavily = provider("tavily", returns([r("https://t.com/1")]));
     const out = await make([exa, tavily]).run({ queries: ["q"] }, createTurnCounter());
     expect(out.results.map((x) => x.url)).toEqual(["https://t.com/1"]);
-    expect(out.sources).toEqual([{ query: "q", provider: "tavily", cached: false }]);
+    expect(out.sources).toEqual([{ query: "q", provider: "tavily", cached: false, failedProviders: ["exa"] }]);
     expect(out.allFailed).toBe(false);
   });
 

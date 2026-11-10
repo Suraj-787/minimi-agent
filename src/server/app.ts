@@ -12,6 +12,7 @@ import {
 } from "../db/repo";
 import { errorFields, log } from "../lib/log";
 import { isValidTimezone } from "../lib/tz";
+import { mountMemoryRoutes } from "./memoryRoutes";
 
 const chatBody = z.object({
   threadId: z.uuid(),
@@ -91,6 +92,8 @@ export function createApp(deps: AgentDeps): Hono {
   app.delete("/api/threads/:id", (c) => {
     return deleteThread(db, c.req.param("id")) ? c.body(null, 204) : c.json({ error: "Thread not found" }, 404);
   });
+
+  mountMemoryRoutes(app, db, now);
 
   return app;
 }

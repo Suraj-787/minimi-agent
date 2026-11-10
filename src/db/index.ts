@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 
 export type Db = Database.Database;
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 3;
 
 /** Idempotent: safe to call on every boot and on an already-migrated file. */
 export function migrate(db: Db): void {
@@ -14,6 +14,16 @@ export function migrate(db: Db): void {
   }
   // schema.sql is all IF NOT EXISTS, so re-running it is the v0 → v1 step and a no-op after that.
   db.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
+  // v1 → v2: threads.memory_forgotten_seq. CREATE TABLE IF NOT EXISTS does not add columns to an old file.
+  const cols = db.pragma("table_info(threads)") as { name: string }[];
+  if (!cols.some((c) => c.name === "memory_forgotten_seq")) {
+    db.exec("ALTER TABLE threads ADD COLUMN memory_forgotten_seq INTEGER");
+  }
+  // v2 → v3: traces.first_status_ms.
+  const traceCols = db.pragma("table_info(traces)") as { name: string }[];
+  if (!traceCols.some((c) => c.name === "first_status_ms")) {
+    db.exec("ALTER TABLE traces ADD COLUMN first_status_ms INTEGER");
+  }
   db.pragma(`user_version = ${SCHEMA_VERSION}`);
 }
 

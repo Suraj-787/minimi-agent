@@ -54,14 +54,20 @@ export type DateRef = { kind: "claim"; entity: string; date: string } | { kind: 
 /**
  * The evidence date, as code states it, so the model never compares dates itself (rule 3). A page date
  * is when the page was published or last crawled, not when a price changed (D36): prompts.ts says so.
- * Against a claim, the boundary day counts as "on or before": evidence from the day we answered could
- * not have been news to us (D41).
+ * Against a claim, only a strictly earlier date is "before" and only a strictly later one "after". A page
+ * dated the SAME day as the claim cannot be ordered against it (D54), so it is labelled as such.
  */
+/** How a result's date orders against a claim's day: only strictly earlier is "before", equal is "same" (D54). */
+export function claimSide(publishedDate: string, claimDate: string): "before" | "same" | "after" {
+  return publishedDate < claimDate ? "before" : publishedDate === claimDate ? "same" : "after";
+}
+
 export function evidenceDate(publishedDate: string | undefined, ref?: DateRef): string {
   if (!publishedDate) return "undated";
   if (!ref) return `published ${publishedDate}`;
   if (ref.kind === "since") return `published ${publishedDate} (${publishedDate < ref.date ? "before" : "after"} since)`;
-  const side = publishedDate <= ref.date ? "on or before" : "after";
+  const s = claimSide(publishedDate, ref.date);
+  const side = s === "same" ? "same day as" : s;
   return `published ${publishedDate} (${side} the ${escapeText(ref.entity)} claim date ${ref.date})`;
 }
 
@@ -96,8 +102,10 @@ export function createWebSearchTool(deps: {
   emit: ToolEmit;
   /** Verify mode only: tops up uncovered items and rewrites the news call (D37). */
   recheck?: RecheckTracker;
+  /** Every outcome, for the trace (queries, providers, fallbacks). */
+  onOutcome?: (outcome: SearchOutcome) => void;
 }) {
-  const { search, turn, emit, recheck } = deps;
+  const { search, turn, emit, recheck, onOutcome } = deps;
   return tool({
     description:
       "Search the web. Use it for anything that changes (prices, versions, news, people's roles, anything current or latest), for anything you are unsure of, and for every request to verify an earlier answer. Do not use it for greetings, small talk, thanks or stable knowledge, and never because an earlier turn in the conversation searched; judge only the latest user message. Results are numbered [n]; cite them as [n].",
@@ -106,6 +114,7 @@ export function createWebSearchTool(deps: {
       const input = recheck ? recheck.apply(raw) : raw;
       for (const q of input.queries) emit.status(`Searching: ${q}`);
       const outcome = await search.run(input, turn, abortSignal);
+      onOutcome?.(outcome);
       for (const r of outcome.results) {
         if (r.isNew) emit.source({ n: r.n, url: r.url, title: r.title, publishedDate: r.publishedDate });
       }

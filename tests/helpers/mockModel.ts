@@ -125,3 +125,58 @@ export function scriptedModel(steps: Array<{ text?: string; toolCall?: { name: s
     },
   });
 }
+
+/** An HTTP-style provider error; `body` and `headers` are what Retry-After / retryDelay parsing reads. */
+export function httpError(statusCode: number, o: { body?: string; headers?: Record<string, string> } = {}): APICallError {
+  return new APICallError({
+    message: "provider said no",
+    url: "https://example.test",
+    requestBodyValues: {},
+    statusCode,
+    ...(o.body ? { responseBody: o.body } : {}),
+    ...(o.headers ? { responseHeaders: o.headers } : {}),
+    isRetryable: statusCode === 429 || statusCode >= 500,
+  });
+}
+
+/**
+ * Throws `errors[i]` on the i-th doStream call that has one (undefined = pass through to `inner`).
+ * The inner script only advances on calls that reach it, so a failed attempt does not eat a scripted step.
+ */
+export function flakyModel(inner: MockLanguageModelV4, errors: Array<Error | undefined>) {
+  let call = 0;
+  const model = new MockLanguageModelV4({
+    doStream: async (options) => {
+      const err = errors[call++];
+      if (err) throw err;
+      return inner.doStream(options);
+    },
+  });
+  return { model, attempts: () => call };
+}
+
+/** Text, then an error part in the same stream: a failure after the user has already seen output. */
+export function errorAfterText(text: string, error: unknown): MockLanguageModelV4 {
+  return new MockLanguageModelV4({
+    doStream: async () => ({
+      stream: streamOf([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t1" },
+        { type: "text-delta", id: "t1", delta: text },
+        { type: "error", error },
+      ]) as never,
+    }),
+  });
+}
+
+/** An error part before any content, then (on the next call) a normal reply. */
+export function errorChunkFirst(error: unknown, then: string[]): MockLanguageModelV4 {
+  let i = 0;
+  return new MockLanguageModelV4({
+    doStream: async () => ({
+      stream: streamOf(
+        i++ === 0 ? [{ type: "stream-start", warnings: [] }, { type: "error", error }] : textChunks(then),
+      ) as never,
+    }),
+  });
+}

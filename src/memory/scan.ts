@@ -33,6 +33,14 @@ function hasBase64Blob(text: string): boolean {
   return false;
 }
 
+/** Every reason scanText can return: how the drawer tells a scanner hit ("blocked") from a policy skip. */
+export const SCAN_REASONS: ReadonlySet<string> = new Set([
+  "invisible-or-bidi-chars",
+  "encoded-blob",
+  "link-not-in-sources",
+  ...PATTERNS.map(([reason]) => reason),
+]);
+
 export function scanText(raw: string, allowedUrls: Iterable<string> = []): ScanResult {
   if (INVISIBLE.test(raw)) return { ok: false, reason: "invisible-or-bidi-chars" };
   // Full-width and other compatibility forms ("ｉｇｎｏｒｅ") fold to ASCII before matching.

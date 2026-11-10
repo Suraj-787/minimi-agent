@@ -6,9 +6,11 @@ interface Props {
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
+  view: "chat" | "memory";
+  onView: (v: "chat" | "memory") => void;
 }
 
-export function Sidebar({ threads, activeId, onSelect, onNew, onDelete }: Props) {
+export function Sidebar({ threads, activeId, onSelect, onNew, onDelete, view, onView }: Props) {
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-neutral-200 bg-neutral-50">
       <button
@@ -17,6 +19,19 @@ export function Sidebar({ threads, activeId, onSelect, onNew, onDelete }: Props)
       >
         New chat
       </button>
+      <div role="tablist" className="mx-3 mb-2 flex gap-1 text-sm">
+        {(["chat", "memory"] as const).map((v) => (
+          <button
+            key={v}
+            role="tab"
+            aria-selected={view === v}
+            onClick={() => onView(v)}
+            className={`flex-1 rounded-md px-2 py-1 ${view === v ? "bg-neutral-200 font-medium" : "hover:bg-neutral-100"}`}
+          >
+            {v === "chat" ? "Chats" : "Memory"}
+          </button>
+        ))}
+      </div>
       <nav className="flex-1 overflow-y-auto px-2 pb-3">
         {threads.length === 0 && <p className="px-2 text-sm text-neutral-500">No chats yet.</p>}
         {threads.map((t) => (

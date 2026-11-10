@@ -330,3 +330,126 @@ alone (it rewords, and the user saw the table, not the extraction).
 allows "introduced/launched" only with a source dated after the claim date. `takeawayGaps()` finds non-Unchanged rows not
 named after the table; they go into the trace as `errors: [{ verifyTakeawayMissing }]` for the debug drawer and evals. The
 answer is never rewritten after streaming.
+
+## Phase 5 — reliability, observability, memory UI
+
+**D45 — Retry is language-model middleware on the main model only, with a visible status.** `agent/retryMiddleware.ts` wraps
+`doStream`/`doGenerate`, so a 503 on the answer step repeats that one call and never re-runs `web_search` (tested). Up to 3
+retries on 429/408/5xx; the wait is the provider's hint (`retry-after-ms`, `Retry-After`, Gemini `retryDelay`) capped at 20 s,
+else 1 s·2ⁿ with jitter. A 429 whose body names a per-day quota fails fast with a "daily free quota is used up" message.
+The stream is read until its first content part: a thrown error or an error part before content is retried; an error part
+after text has started is not (the user may have seen output). The SDK's `maxRetries` stays 0 on the main call so nothing is
+retried twice; the background extractor keeps `maxRetries: 2` and gets no retry middleware. The same work found that a
+mid-stream error part left the turn saved as `complete` (and then remembered); it is now saved as `error`.
+*Rejected:* retrying around `runAgent` (re-runs searches, replays text); SDK retries (no status hook).
+
+**D46 — Dev LLM cache, with guardrails.** `lib/llmCache.ts`, below the retry layer. The key hashes provider, model id and the
+whole call (not the abort signal or headers). Only a stream that finished with a `finish` part and no `error` part is stored;
+thrown errors and cancelled streams store nothing. Ignored under `NODE_ENV=production` (warning), a loud warning when on, and
+only `getModels(env, { cache })` installs it: the server and the CLI pass it, the eval runner never does, so evals always hit
+the real model. *Evals:* see D53.
+
+**D47 — `fresh` searches are reused for 2 minutes.** Re-sending after a failed turn re-did every live crawl. Fresh queries read
+and write a separate `fresh:`-prefixed cache row with a 2-minute TTL; they still never read the 1 h / 24 h entries.
+Search outcomes now record which providers failed before the one that answered (the trace shows the fallback).
+
+**D48 — Forget acts on the whole key chain.** Forgetting a claim marks every row with its key `forgotten` (status only, no
+deletes), so a superseded predecessor cannot reappear as "previously:" or as a value. Each row is logged as `memory_writes`
+op `forget`. "Forget chat" does the same for every key that chat touched, deletes that chat's turn summaries, and sets
+`threads.memory_forgotten_seq` (schema v2) so its turns up to that point stop being recalled into other chats; the chat's
+messages stay. *Rejected:* deleting claims (rule 10); forgetting only the clicked row (the predecessor resurfaces).
+
+**D49 — The debug endpoint is a whitelist.** `GET /api/debug/:turnId` builds its JSON field by field from the trace row,
+plus recalled memory described in words and this turn's `memory_writes` read live. It never reads env. Writes are labelled
+`blocked` (the injection scanner stopped it) or `skipped` (a policy check: table says Unchanged, older evidence, unsourced,
+hedged). The UI renders everything as text; `/verify` forbids `dangerouslySetInnerHTML`.
+
+## Phase 5 browser-test fixes
+
+**D50 — Missing earlier content: say so and ask, in the prompt and in code; citations are [n] only.** With the shortlist chat
+forgotten, "On Monday we shortlisted 5 CRM tools…" got a generic CRM search. The static prompt now has a "Missing earlier
+content" section (say what there is no record of, ask for the details, no substitute search, never invent). Because a prompt
+rule alone failed before (D37), `buildContext` also adds an app-authored "No record found: …" line to `<context>` when the
+message has a back-reference cue, nothing was recalled, and this chat has no earlier turns (an in-chat "you said" is answered
+from the R0 history, so no line there). Answers cite with [n] only: the prompt forbids markdown links and bare URLs, and
+`answerChecks.rawLinks` records any in the trace (`errors: [{ rawLinks }]`). The answer is never rewritten (D44). The web UI's
+own [n] → link rendering is unaffected. *Rejected:* forcing `toolChoice: none` when memory is empty (a message can mix a
+memory reference with a genuine search need).
+
+**D51 — "Shipped since <date>" is checked, and an ambiguous date is surfaced.** The prompt says a listed item needs its own
+source date after <date>, and an ambiguous weekday must be stated or asked. `answerChecks.shippedProblems` reads the list under
+the header and records items dated on or before the date, undated items, and a header date that is not the expected since
+(`errors: [{ shippedNotAfterSince }]`). A bare "since" after an ambiguous weekday ("On Monday … shipped since?" with no record
+of either Monday) gets a `<context>` line saying there is no since date and to state the assumption or ask. "since <weekday>"
+is unchanged: it always means the most recent one (`time.ts`). Eval keys `noRawLinks` and `shippedAfterSince` read these
+trace entries.
+
+**D52 — Dated evidence that states the new value wins; the drawer shows what the model saw.** When results for an item
+disagree on date, the prompt says to rely on a dated result that states the new value over undated or old-value pages; its
+code-written label (on or before / after the claim date) then decides Already outdated vs Changed. This stays a prompt rule
+backed by eval A16; no result re-ranking in code yet. The trace now stores the re-checked items (`intent.recheck.claims`),
+each recalled claim's status AT RECALL (`memory_ids.claimsAtRecall`, because claims change after the turn), and
+`first_status_ms` (schema v3), the time to the first "Searching…" or retry notice. Every `memory_writes` row shows key and
+value (from its detail, else its claim row; a supersede also shows the previous value).
+
+**D53 — Evals run on the real model; the cache is an explicit `--cache` flag.** A cached eval measures replayed text, so its
+latency, retries and pass rate say nothing about the model. The runner therefore ignores `DEV_LLM_CACHE` in the env and passes
+`getModels` a cache target only when `--cache` is given (with the flag, it enables the cache itself). `--cache` prints a banner at
+start and in the summary, and the runner refuses to write `eval/results.md` from such a run, so a committed result is always
+from the real model. *Rejected:* honouring the env var (a stray `DEV_LLM_CACHE=1` in `.env` would silently cache a "real" run).
+
+## Phase 5 second browser test
+
+**D54 — Same-day evidence cannot be ordered against a claim.** A4 showed "Already outdated when asked" for a page dated the
+same day the claim was said. D41 counted the claim's own day as "on or before"; that is withdrawn. A date has day precision, so
+a same-day page may be earlier or later than the answer. The tool now labels `(before the <item> claim date D)` only for a
+strictly earlier date, `(same day as the <item> claim date D)` for an equal one, and `(after …)` for a later one. A different
+value with only same-day evidence is "Differs now (timing unknown)": not Already outdated, not Changed. Eval A17.
+
+**D55 — A row's source must be about that row's item.** The same A4 row cited a HubSpot blog about generative-AI CRMs for a
+Pipedrive price. `answerChecks.sourceMismatches` takes the vendor as the item's first word and checks that each cited result's
+URL, title or snippet mentions it; mismatches go to the trace (`errors: [{ verifySourceMismatch }]`), like
+`verifyTakeawayMissing`. The prompt adds the rule that a competitor's blog, a roundup of other vendors or an unrelated page cannot
+back another vendor's price, and that such a row is Couldn't verify. A blog that does name the vendor passes the code check; the
+prompt and the judge rubric cover that case (eval A18). *Not done:* blocking the ledger touch for a mismatched row (a follow-up;
+today the trace only records it).
+
+**D56 — Chat stays mounted behind the Memory tab.** Switching to Memory unmounted Chat; coming back remounted it with the
+messages loaded before the last turn, so a new chat showed blank until a refresh. `ViewSwitch` now keeps Chat in the page (hidden),
+so useChat's state survives, and mounts Memory only while it is open, so it refetches every time. `buildChatBody` is the one place
+that builds the POST body and always uses the id useChat was created with, so a send from a blank chat never mints a thread (test,
+plus a server test that two sends to one id make one thread with four messages). *Rejected:* reloading on remount alone (loses an
+in-flight stream); a DOM test harness (no new dependencies, rule 7), so the layout and the request body are tested as pure pieces.
+
+**D57 — A source that is not about the item keeps its row out of the ledger.** D55 only recorded the mismatch. Now
+`writeTurnMemory` gets this turn's results and skips, with a `memory_writes` row `rejected` and reason "source doesn't mention the
+item" (the drawer shows it as "skipped"): (a) an extractor claim whose own cited source does not name its entity, so no add or
+supersede; (b) a verify-table row none of whose cited sources names the item, so no touch, and any extractor claim for that key is
+held as well. A row citing several sources passes if any one names the vendor. Matching is whole-word and case-insensitive ("Bun"
+never matches "bundle"); the vendor is the item's first word, also joined with the second so "Node.js" finds nodejs.org. Short
+(4 letters or fewer) and common-word vendors (Bun, Neon, Render, Linear, Notion…) must appear in the URL or title, because a body
+mention of "render" or "bun" proves nothing. With no results passed (direct callers, old tests) the check is off. The check also
+applies to ordinary non-verify turns: a claim must be backed by a page about it. *Cost:* a roundup page that names Neon only in
+its body no longer backs a Neon claim; the claim is skipped and logged, not lost silently. *Rejected:* blocking on the table row
+alone (the extractor could still write the claim from the bad source).
+
+**D58 — Vendor page first for prices; "reported" vs "shipped"; both as soft checks.** Two style rules in the static prompt. (1) For a
+price row, cite the vendor's own page first when it states the price (an undated vendor page is fine); a dated third-party page only
+when the vendor page is missing or unclear, or to order the evidence, and then after it. (2) In "Shipped since <date>" write
+"reported <date>" unless the date comes from the vendor's own announcement, release notes or changelog; never "shipped <date>" for a
+news recap, roundup or aggregator. They are judgement calls, so the code checks are SOFT: `vendorPageFirstProblems` (applies only
+when this turn's results include a vendor-host page whose snippet looks like a price) and `shippedWordingProblems` (a "shipped" line
+with no cited source on the vendor's host) write `softVendorPageNotFirst` / `softShippedWording` into the trace errors; eval cases carry
+them under `softChecks`, which the runner reports as warnings and never fails a case on. "Vendor's own" means the item's vendor
+name as a whole word in the host (blog.hubspot.com counts; a recap that names HubSpot only in its path does not). *Rejected:* making
+them hard failures (a vendor can state a price on a page whose snippet carries no number, so the check can be wrong).
+
+**D59 — Soft check: the status must agree with the evidence label.** The status is supposed to follow from the date label the tool
+wrote on the cited result (D54), but the model picks it, and A2/A4 showed slips in both directions. `statusContradictions` reads each
+table row and the label the model actually saw for each cited result (computed in `runAgent` with the same `claimSide` the tool
+uses, only for results found for a recalled claim, only when dated). It flags "Changed after" / "Differs now" with a result labelled
+`before` the claim date, and "Already outdated when asked" with one labelled `after` or `same day`. A label computed for another
+vendor's claim is ignored, and "Differs now" on same-day evidence is correct, so it is not flagged. Recorded as
+`errors: [{ verifyStatusContradiction }]`; the answer is never rewritten; eval key `statusMatchesEvidenceLabel` is soft (A2, A17).
+Every cited labelled result is checked, so a row citing a vendor page plus an earlier third-party page can be flagged; that is
+noise accepted for a soft check. The longer-term fix (code computes the status) is listed in DESIGN.md under "With another week".

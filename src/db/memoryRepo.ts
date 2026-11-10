@@ -30,7 +30,8 @@ const TURN_SELECT = `
     SELECT MIN(x.seq) FROM messages x WHERE x.thread_id = u.thread_id AND x.role = 'assistant' AND x.seq > u.seq
   )
   LEFT JOIN turn_summaries s ON s.turn_id = a.id
-  WHERE u.role = 'user' AND a.status != 'error'`;
+  WHERE u.role = 'user' AND a.status != 'error'
+    AND u.seq > COALESCE((SELECT t.memory_forgotten_seq FROM threads t WHERE t.id = u.thread_id), 0)`;
 
 /** Turns asked on local days `from`..`to` (inclusive), in any thread, oldest first. */
 export function turnsInRange(db: Db, from: string, to: string): TurnRow[] {
@@ -241,6 +242,14 @@ export interface NewTrace {
   memoryIds: unknown;
   memoryChars: number;
   contextMs: number;
+  /** One entry per search query: provider that answered, cache hit, providers that failed first. */
+  queries?: unknown;
+  /** Provider that answered most queries (a quick "which search ran" for the drawer header). */
+  provider?: string | null;
+  firstStatusMs?: number | null;
+  firstTokenMs?: number | null;
+  totalMs?: number | null;
+  usage?: unknown;
   errors?: unknown;
   createdAt: Date;
 }
@@ -249,13 +258,17 @@ export interface NewTrace {
 export function insertTrace(db: Db, t: NewTrace): void {
   db.prepare(
     `INSERT INTO traces (turn_id, thread_id, intent_json, resolved_dates_json, recall_rules_json, memory_ids_json,
-                         memory_chars, context_ms, errors_json, created_at)
+                         memory_chars, context_ms, queries_json, provider, first_status_ms, first_token_ms, total_ms, usage_json,
+                         errors_json, created_at)
      VALUES (@turn_id, @thread_id, @intent_json, @resolved_dates_json, @recall_rules_json, @memory_ids_json,
-             @memory_chars, @context_ms, @errors_json, @created_at)
+             @memory_chars, @context_ms, @queries_json, @provider, @first_status_ms, @first_token_ms, @total_ms, @usage_json,
+             @errors_json, @created_at)
      ON CONFLICT(turn_id) DO UPDATE SET
        intent_json = excluded.intent_json, resolved_dates_json = excluded.resolved_dates_json,
        recall_rules_json = excluded.recall_rules_json, memory_ids_json = excluded.memory_ids_json,
-       memory_chars = excluded.memory_chars, context_ms = excluded.context_ms, errors_json = excluded.errors_json`,
+       memory_chars = excluded.memory_chars, context_ms = excluded.context_ms, queries_json = excluded.queries_json,
+       provider = excluded.provider, first_status_ms = excluded.first_status_ms, first_token_ms = excluded.first_token_ms, total_ms = excluded.total_ms,
+       usage_json = excluded.usage_json, errors_json = excluded.errors_json`,
   ).run({
     turn_id: t.turnId,
     thread_id: t.threadId,
@@ -265,6 +278,12 @@ export function insertTrace(db: Db, t: NewTrace): void {
     memory_ids_json: JSON.stringify(t.memoryIds),
     memory_chars: t.memoryChars,
     context_ms: Math.round(t.contextMs),
+    queries_json: t.queries === undefined ? null : JSON.stringify(t.queries),
+    provider: t.provider ?? null,
+    first_status_ms: t.firstStatusMs == null ? null : Math.round(t.firstStatusMs),
+    first_token_ms: t.firstTokenMs == null ? null : Math.round(t.firstTokenMs),
+    total_ms: t.totalMs == null ? null : Math.round(t.totalMs),
+    usage_json: t.usage === undefined ? null : JSON.stringify(t.usage),
     errors_json: t.errors === undefined ? null : JSON.stringify(t.errors),
     created_at: t.createdAt.toISOString(),
   });
@@ -279,9 +298,93 @@ export interface TraceRow {
   memory_ids_json: string | null;
   memory_chars: number | null;
   context_ms: number | null;
+  queries_json: string | null;
+  provider: string | null;
+  first_status_ms: number | null;
+  first_token_ms: number | null;
+  total_ms: number | null;
+  usage_json: string | null;
   errors_json: string | null;
+  created_at: string;
 }
 
 export function getTrace(db: Db, turnId: string): TraceRow | undefined {
   return db.prepare("SELECT * FROM traces WHERE turn_id = ?").get(turnId) as TraceRow | undefined;
+}
+
+// ── memory panel: listing and forgetting ─────────────────────────────────
+
+export interface PanelClaim extends ClaimRow {
+  /** The local day the claim was said (its turn's local_date); falls back to the UTC day of observed_at. */
+  day: string;
+  thread_title: string | null;
+}
+
+/**
+ * Non-forgotten claims for the panel, with the day and chat they came from. `current` hides superseded
+ * rows; the chain is rebuilt by the caller from `claimHistory`.
+ */
+export function panelClaims(db: Db, status: "current" | "all"): PanelClaim[] {
+  return db
+    .prepare(
+      `SELECT c.*, COALESCE(m.local_date, substr(c.observed_at, 1, 10)) AS day, t.title AS thread_title
+       FROM claims c
+       LEFT JOIN messages m ON m.id = c.turn_id
+       LEFT JOIN threads t ON t.id = c.thread_id
+       WHERE c.status != 'forgotten' ${status === "current" ? "AND c.status = 'current'" : ""}
+       ORDER BY day DESC, c.observed_at DESC, c.rowid DESC`,
+    )
+    .all() as PanelClaim[];
+}
+
+/**
+ * Forgets a claim AND every other row with its key, so a superseded predecessor can never come back as
+ * "previously: …" or as a stale value (D48). Rows keep their data: only `status` changes, and each one is
+ * logged as op='forget'. Returns the ids forgotten (empty if the claim is unknown or already forgotten).
+ */
+export function forgetClaimChain(db: Db, claimId: string, at: Date): string[] {
+  const claim = getClaim(db, claimId);
+  if (!claim) return [];
+  return forgetKeys(db, [claim.key], at, { via: "claim", claimId });
+}
+
+/** Forgets one chat's memory: its claims (with their key chains), its summaries, and hides its turns from recall. */
+export function forgetThreadMemory(db: Db, threadId: string, at: Date): { claims: number; summaries: number } {
+  const run = db.transaction(() => {
+    const keys = (db.prepare("SELECT DISTINCT key FROM claims WHERE thread_id = ?").all(threadId) as { key: string }[]).map(
+      (r) => r.key,
+    );
+    const claims = forgetKeys(db, keys, at, { via: "thread", threadId }).length;
+    const summaries = db.prepare("DELETE FROM turn_summaries WHERE thread_id = ?").run(threadId).changes;
+    // Turns up to now stay in the chat but are no longer recalled into other chats.
+    const last = db.prepare("SELECT MAX(seq) AS s FROM messages WHERE thread_id = ?").get(threadId) as { s: number | null };
+    if (last.s !== null) db.prepare("UPDATE threads SET memory_forgotten_seq = ? WHERE id = ?").run(last.s, threadId);
+    insertMemoryWrite(db, { turnId: null, op: "forget", detail: { scope: "thread", threadId, claims, summaries }, createdAt: at });
+    return { claims, summaries };
+  });
+  return run();
+}
+
+function forgetKeys(db: Db, keys: readonly string[], at: Date, detail: Record<string, unknown>): string[] {
+  if (keys.length === 0) return [];
+  const marks = keys.map(() => "?").join(",");
+  const forgotten: string[] = [];
+  const run = db.transaction(() => {
+    const rows = db
+      .prepare(`SELECT id, key, turn_id, status FROM claims WHERE key IN (${marks}) AND status != 'forgotten'`)
+      .all(...keys) as { id: string; key: string; turn_id: string; status: ClaimStatus }[];
+    for (const r of rows) {
+      db.prepare("UPDATE claims SET status = 'forgotten' WHERE id = ?").run(r.id);
+      insertMemoryWrite(db, {
+        turnId: r.turn_id,
+        op: "forget",
+        claimId: r.id,
+        detail: { ...detail, key: r.key, was: r.status },
+        createdAt: at,
+      });
+      forgotten.push(r.id);
+    }
+  });
+  run();
+  return forgotten;
 }

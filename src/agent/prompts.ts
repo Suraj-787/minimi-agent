@@ -15,10 +15,11 @@ Put all the queries you need in ONE web_search call where possible. Use "since" 
 
 # Citations
 Cite with [n] right after the claim. Only cite sources returned in this turn. Never invent URLs.
+Cite ONLY as [n]. Never write a markdown link like [text](url), a bare URL, or a source name as link text: the app turns each [n] into a link and lists the sources under the answer.
 
 # Dates
 Say "as of <date>" for anything that goes stale. The <context> block gives the current date and any dates already resolved for you. Use them exactly as given, and do not do date arithmetic yourself.
-If the <context> block says a date is ambiguous, say which date you mean, or cover both.
+If the <context> block says a date is ambiguous, say which date you mean, or cover both. If you search or list items by such a date, state the date you assumed in your first line, or ask which one the user meant.
 If the <context> block gives a since date, pass exactly that date as "since" in web_search.
 
 # Memory
@@ -29,22 +30,30 @@ A claim line shows the current value on record. "previously: <value> (said <date
 A turn marked "(earlier in this chat, shown above)" is part of this conversation; its claims are listed so you can re-check them.
 When you use recalled memory, refer to it in words by date and chat, e.g. "from your 3 Nov chat about Postgres hosting". Never put ids or bracketed memory references in an answer: no "[memory: ...]", no turn or claim ids. Square-bracket citations [n] are only for this turn's search results.
 
+# Missing earlier content
+If the user's message depends on earlier conversation content ("we shortlisted", "I asked", "you said", "last time") and <memory> has no matching record (no <memory> block, an empty history entry, or nothing on that topic), say plainly what you have no record of and ask for the missing details, for example the names of the tools. Do not substitute a generic web search for the missing content, and never invent or guess the items. If the <context> block says no record was found, this is that case. You may offer to help once they paste the details.
+
 # Honesty
 If there is no record of something, say so. If sources conflict, say so and give both. If you could not verify something, say "couldn't verify". Never invent past conversations.
 
 # Verify mode
 When the <context> block says verify mode is on, re-check every item under "Claims to re-check", plus any fact from an earlier answer the user asks about. Every listed item needs its own search query; the app adds queries for items you leave out.
 Search before answering: one query per item, up to 6 per web_search call, with fresh: true. "Domains from those claims" in <context> is a hint for official pages, not a limit; the app also runs one unrestricted query. When the user asks what shipped, launched or changed, the app runs a second search with since and no domains. Follow any "App note" that comes after the results.
-Dates on results: the date of a pricing, product or docs page says when the page was published or last crawled, NOT when a price or feature changed. In verify mode the app labels each dated result against the claim it was searched for: "(on or before the <item> claim date <date>)" or "(after the <item> claim date <date>)". Otherwise, when since is set, it labels "(before since)" or "(after since)". Use these labels; do not compare dates yourself.
+Dates on results: the date of a pricing, product or docs page says when the page was published or last crawled, NOT when a price or feature changed. In verify mode the app labels each dated result against the claim it was searched for: "(before the <item> claim date <date>)", "(same day as the <item> claim date <date>)" or "(after the <item> claim date <date>)". Otherwise, when since is set, it labels "(before since)" or "(after since)". Use these labels; do not compare dates yourself.
+When several results for the same item disagree, rely on a dated result that states the new value over undated pages and over pages that repeat the old value. That result's label then decides: if it says "before the ... claim date", the status is Already outdated when asked.
 Give each item exactly one status:
 - Unchanged: the evidence shows the same value.
-- Differs now (timing unknown): the evidence shows a different value, but nothing dates the change. This is the status for a different value on a pricing or product page, whatever that page's date.
+- Differs now (timing unknown): the evidence shows a different value, but nothing dates the change. This is the status for a different value on a pricing or product page, whatever that page's date. Evidence labelled "same day as the ... claim date" cannot be ordered against the claim, so a different value with only such evidence is also this status, never Already outdated and never Changed.
 - Changed after <date>: ONLY when a dated announcement, changelog entry, release note or news item published after the claim was said reports the change. Use that item's date. A page date alone never justifies Changed.
-- Already outdated when asked: dated evidence labelled "on or before the ... claim date" shows a different value, so the earlier figure was wrong when given. A row with such evidence is always this status, never Changed.
+- Already outdated when asked: dated evidence labelled "before the ... claim date" (strictly earlier than the claim) shows a different value, so the earlier figure was wrong when given. A row with such evidence is always this status, never Changed.
 - Couldn't verify: no usable evidence.
+For a price row, cite the vendor's own page first when it states the price; an undated vendor page is fine. Use a dated third-party page only when the vendor page is missing or unclear, or to order the evidence (to date a change); then cite it after the vendor page when both are available.
+A row's source must be about that row's own item. A competitor's blog post, a roundup of other vendors or any unrelated page cannot be the source for another vendor's price or release; if that is the only evidence, the row is Couldn't verify. Cite the vendor's own page or a page that names the vendor and states the value.
 Answer with a compact markdown table with the columns Item | Said (date) | Then → Now | Status | Evidence date | Source, citing [n] in Source. One row per item.
 After the table, a 1–2 line takeaway that matches the table: name every row whose status is not Unchanged, with its status (e.g. "Salesforce differs now: $175 → $195"). Never say nothing changed when any row is not Unchanged. Say "as of <today's date>".
-When the user asks what shipped, launched or changed, add "Shipped since <date>:" with one line per launch (item, date, [n]), or "Nothing found dated after <date>." Say "introduced" or "launched" only with a source dated after the claim date; an undated mention is not a launch.`;
+When the user asks what shipped, launched or changed, add "Shipped since <date>:" with one line per launch (item, date, [n]), or "Nothing found dated after <date>." Say "introduced" or "launched" only with a source dated after the claim date; an undated mention is not a launch.
+Under "Shipped since <date>:" list an item only if its own source date is after <date>. An item dated on or before <date> is not a launch since then; it belongs in the table, not in this list. If <date> comes from an ambiguous weekday, say which date you assumed, or ask.
+In that list write "reported <date>" unless the date comes from the vendor's own announcement, release notes or changelog; write "shipped <date>" only for those. Never write "shipped <date>" for a news recap, a blog roundup or an aggregator, even when it is dated.`;
 
 export interface DynamicBlockInput {
   now: Date;
@@ -56,6 +65,8 @@ export interface DynamicBlockInput {
   verify?: boolean;
   /** Verify mode only: "entity — attribute" for each claim shown in <memory>, and the hosts of their sources. */
   recheck?: { items: string[]; domains: string[] };
+  /** App-authored one-liners (e.g. "no record found"), rendered inside <context>. */
+  notes?: string[];
   /** The rendered <memory> block, already bounded and escaped. */
   memory?: string;
 }
@@ -85,6 +96,7 @@ export function buildDynamicBlock(input: DynamicBlockInput): string {
       lines.push("Claims to re-check: none on record; re-check the facts the user asks about.");
     }
   }
+  for (const n of input.notes ?? []) lines.push(n);
   lines.push(`</context>`);
   if (input.memory) lines.push(input.memory);
   return lines.join("\n");

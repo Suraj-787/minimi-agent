@@ -53,3 +53,17 @@ describe("FTS5 triggers", () => {
     expect(match(db, '"beta"')).toHaveLength(1);
   });
 });
+
+describe("migrate from older files", () => {
+  it("adds threads.memory_forgotten_seq and traces.first_status_ms to a v1 database", () => {
+    const db = openDb(":memory:");
+    db.exec("ALTER TABLE threads DROP COLUMN memory_forgotten_seq; ALTER TABLE traces DROP COLUMN first_status_ms;");
+    db.pragma("user_version = 1");
+    migrate(db);
+    const names = (t: string) => (db.pragma(`table_info(${t})`) as { name: string }[]).map((c) => c.name);
+    expect(names("threads")).toContain("memory_forgotten_seq");
+    expect(names("traces")).toContain("first_status_ms");
+    expect(db.pragma("user_version", { simple: true })).toBe(3);
+  });
+});
+

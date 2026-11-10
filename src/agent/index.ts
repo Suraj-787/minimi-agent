@@ -5,6 +5,7 @@ import {
   isStepCount,
   streamText,
   toUIMessageStream,
+  wrapLanguageModel,
   type ModelMessage,
   type UIMessageChunk,
   type UIMessagePart,
@@ -24,7 +25,16 @@ import { errorFields, log } from "../lib/log";
 import { insertTrace } from "../db/memoryRepo";
 import { parseVerifyTable, takeawayGaps } from "../memory/verifyTable";
 import { writeTurnMemory } from "../memory/write";
-import { createTurnCounter, type Search } from "../search/index";
+import { createTurnCounter, type Search, type SearchOutcome } from "../search/index";
+import {
+  rawLinks,
+  shippedProblems,
+  shippedWordingProblems,
+  sourceMismatches,
+  statusContradictions,
+  vendorPageFirstProblems,
+  type ResultText,
+} from "./answerChecks";
 import { buildContext, type BuiltContext } from "./context";
 import { friendlyError } from "./errors";
 import { detectIntent } from "./intent";
@@ -32,9 +42,10 @@ import { createRecheckTracker } from "./recheck";
 import { HISTORY_MAX_MESSAGES, selectHistory, toHistoryMessages } from "./history";
 import type { Models } from "./model";
 import { SYSTEM_PROMPT, buildDynamicBlock, withDynamicBlock } from "./prompts";
+import { retryMiddleware, type RetryMiddlewareOptions } from "./retryMiddleware";
 import { recallPolicy, type RecallIntent, type RecallPlan } from "./recallPolicy";
 import { resolveTimeRefs } from "./time";
-import { createWebSearchTool, type ToolEmit } from "./tools/webSearch";
+import { claimSide, createWebSearchTool, type ToolEmit } from "./tools/webSearch";
 
 // Everything the core needs is passed in (CLAUDE.md rule 4): the server, the CLI and the evals
 // each build their own deps and reuse this function unchanged.
@@ -47,6 +58,8 @@ export interface AgentDeps {
   maxSteps: number;
   /** lib/clock.now in production; a fixed function in tests. */
   now: () => Date;
+  /** Sleep and randomness for model retries; tests inject instant ones. */
+  retry?: Pick<RetryMiddlewareOptions, "sleep" | "rand">;
 }
 
 export interface AgentInput {
@@ -76,6 +89,22 @@ function titleFrom(message: string): string {
 export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<AgentRun> {
   const { db, models, now, search, maxSteps } = deps;
   const { threadId, message, tz } = input;
+  // Latency is measured from the moment the request reaches the core: context build is part of it.
+  const startedAt = performance.now();
+  let firstTokenMs: number | undefined;
+  // First transient status ("Searching: …", a retry notice): what the user sees before any text.
+  let firstStatusMs: number | undefined;
+  let totalMs: number | undefined;
+  let usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number; steps?: number } = {};
+  let retries = 0;
+  // A provider error part mid-stream does not make the SDK's outcome "failed", so it is remembered here.
+  // Without it a half answer would be saved as complete and then written into memory (D45).
+  let streamError: { error: unknown } | undefined;
+  const searchLog: Array<SearchOutcome["sources"][number]> = [];
+  const searchFailed: string[] = [];
+  let searchAllFailed = 0;
+  // This turn's results by [n], so the trace can check each cited source is about its row's item (D55).
+  const resultsByN = new Map<number, ResultText>();
 
   // 1. Persist the user message first, so it survives whatever happens to the model call.
   const thread = getThread(db, threadId);
@@ -105,7 +134,8 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
   // Verify mode with claims on record must not depend on the model choosing to search (D31), and every
   // listed item must be searched, plus a dated news pass when the user asks what shipped (D37).
   const forceSearch = intent.verify && ctx.built.recheck.claims.length > 0;
-  const recheck = forceSearch ? createRecheckTracker(recheckInput(ctx.built, intent.news)) : undefined;
+  const recheckIn = forceSearch ? recheckInput(ctx.built, intent.news) : undefined;
+  const recheck = recheckIn ? createRecheckTracker(recheckIn) : undefined;
   const messages: ModelMessage[] = history.map((m, i) => ({
     role: m.role,
     content: i === history.length - 1 ? withDynamicBlock(ctx.built.block, m.text) : m.text,
@@ -147,7 +177,10 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
     onError,
     execute: ({ writer }) => {
       const emit: ToolEmit = {
-        status: (text) => writer.write({ type: "data-status", data: { text }, transient: true }),
+        status: (text) => {
+          firstStatusMs ??= performance.now() - startedAt;
+          writer.write({ type: "data-status", data: { text }, transient: true });
+        },
         source: ({ n, url, title, publishedDate }) =>
           writer.write({
             type: "source-url",
@@ -158,12 +191,55 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
             providerMetadata: { search: { n, ...(publishedDate ? { publishedDate } : {}) } },
           }),
       };
+      // Retry wraps only the model: a 503 on the answer step repeats that one call, never the searches (D45).
+      const retrying = (m: Exclude<typeof models.main, string>) =>
+        wrapLanguageModel({
+        model: m,
+        middleware: retryMiddleware({
+          ...deps.retry,
+          onRetry: ({ attempt, delayMs, reason }) => {
+            retries++;
+            firstStatusMs ??= performance.now() - startedAt;
+            log.warn("model retry", { threadId, attempt, delayMs, reason });
+            writer.write({
+              type: "data-status",
+              data: {
+                text:
+                  reason === "rate-limit"
+                    ? "Rate-limited by the model provider, retrying…"
+                    : "The model provider had an error, retrying…",
+              },
+              transient: true,
+            });
+          },
+        }),
+      });
+      // A plain gateway id string cannot be wrapped; env-built models are always objects.
+      const model = typeof models.main === "string" ? models.main : retrying(models.main);
       const result = streamText({
-        model: models.main,
+        model,
         instructions: SYSTEM_PROMPT,
         messages,
         tools: {
-          web_search: createWebSearchTool({ search, turn: createTurnCounter(), emit, ...(recheck ? { recheck } : {}) }),
+          web_search: createWebSearchTool({
+            search,
+            turn: createTurnCounter(),
+            emit,
+            onOutcome: (o) => {
+              searchLog.push(...o.sources);
+              searchFailed.push(...o.failed);
+              for (const r of o.results) {
+                if (resultsByN.has(r.n)) continue; // keep the label the model saw first
+                // The date label the model was shown for this result, against the claim it was searched for.
+                const item = recheck?.itemFor(r.query, r.title);
+                const label =
+                  item && r.publishedDate ? { entity: item.entity, side: claimSide(r.publishedDate, item.said) } : undefined;
+                resultsByN.set(r.n, { url: r.url, title: r.title, snippet: r.snippet, ...(label ? { label } : {}) });
+              }
+              if (o.allFailed) searchAllFailed++;
+            },
+            ...(recheck ? { recheck } : {}),
+          }),
         },
         stopWhen: isStepCount(maxSteps),
         // On the last allowed step the model may not call the tool, so the turn always ends in text.
@@ -176,9 +252,23 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
           }
           return {};
         },
-        // Retries with a user-visible status arrive in Phase 5 (lib/retry.ts); no hidden SDK retries until then.
+        // The SDK's own retries are silent, so they are off here; retryMiddleware retries with a visible status.
         maxRetries: 0,
-        onError: ({ error }) => log.error("model stream error", { threadId, ...errorFields(error) }),
+        onChunk: ({ chunk }) => {
+          if (chunk.type === "text-delta" && firstTokenMs === undefined) firstTokenMs = performance.now() - startedAt;
+        },
+        onEnd: ({ totalUsage, steps }) => {
+          usage = {
+            ...(totalUsage.inputTokens !== undefined ? { inputTokens: totalUsage.inputTokens } : {}),
+            ...(totalUsage.outputTokens !== undefined ? { outputTokens: totalUsage.outputTokens } : {}),
+            ...(totalUsage.totalTokens !== undefined ? { totalTokens: totalUsage.totalTokens } : {}),
+            steps: steps.length,
+          };
+        },
+        onError: ({ error }) => {
+          streamError ??= { error };
+          log.error("model stream error", { threadId, ...errorFields(error) });
+        },
       });
       writer.merge(
         toUIMessageStream({
@@ -191,20 +281,22 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
         }),
       );
     },
-    onEnd: ({ responseMessage, outcome, isAborted, isCancelled }) =>
-      persistOnce(() => {
+    onEnd: ({ responseMessage, outcome, isAborted, isCancelled }) => {
+      totalMs = performance.now() - startedAt;
+      return persistOnce(() => {
         const text = responseMessage.parts
           .flatMap((p) => (p.type === "text" ? [p.text] : []))
           .join("");
-        if (outcome.status === "failed") {
-          const note = `⚠️ ${friendlyError(outcome.error)}`;
+        if (outcome.status === "failed" || streamError) {
+          const note = `⚠️ ${friendlyError(outcome.status === "failed" ? outcome.error : streamError?.error)}`;
           writeAssistant(text ? `${text}\n\n${note}` : note, "error", null);
         } else if (isAborted || isCancelled || outcome.status === "aborted") {
           writeAssistant(text, "partial", JSON.stringify(responseMessage.parts), responseMessage.parts);
         } else {
           writeAssistant(text, "complete", JSON.stringify(responseMessage.parts), responseMessage.parts);
         }
-      }),
+      });
+    },
   });
 
   // Tracing runs after the reply is saved and never affects it (rule 5).
@@ -214,11 +306,62 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
     const table = intent.verify && finished?.status === "complete" ? parseVerifyTable(finished.text) : undefined;
     const gaps = table ? takeawayGaps(table) : [];
     if (gaps.length > 0) errors.push({ verifyTakeawayMissing: gaps });
+    // A cited source must name the row's vendor (D55): a competitor's blog cannot back another vendor's price.
+    const mismatches = table ? sourceMismatches(table, resultsByN) : [];
+    if (mismatches.length > 0) errors.push({ verifySourceMismatch: mismatches });
+    // The status must agree with the evidence label the model saw (D59). Soft: recorded, never rewritten.
+    const contradictions = table ? statusContradictions(table, resultsByN) : [];
+    if (contradictions.length > 0) errors.push({ verifyStatusContradiction: contradictions });
+    // Soft checks (D58): style judgements the eval reports as warnings, never as failures.
+    const vendorFirst = table ? vendorPageFirstProblems(table, resultsByN) : [];
+    if (vendorFirst.length > 0) errors.push({ softVendorPageNotFirst: vendorFirst });
+    const wording = finished?.status === "complete" ? shippedWordingProblems(finished.text, resultsByN) : [];
+    if (wording.length > 0) errors.push({ softShippedWording: wording });
+    // Answers cite [n] only (D50); a raw link means the model ignored the rule. Recorded, never rewritten.
+    if (finished?.status === "complete") {
+      const links = rawLinks(finished.text);
+      if (links.length > 0) errors.push({ rawLinks: links.slice(0, 5) });
+      // "Shipped since <date>:" lists only items dated after <date> (D51).
+      const expected = recheckIn?.newsSince ?? ctx.built.trace.sinceDate;
+      const shipped = shippedProblems(finished.text, expected);
+      if (shipped.length > 0) errors.push({ shippedNotAfterSince: shipped });
+    }
+    if (searchFailed.length > 0) errors.push({ searchFailed });
+    if (searchAllFailed > 0) errors.push({ searchUnavailable: searchAllFailed });
+    // The provider that answered the most queries; "(none)" turns have no search at all.
+    const counts = new Map<string, number>();
+    for (const q of searchLog) counts.set(q.provider, (counts.get(q.provider) ?? 0) + 1);
+    const provider = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+    log.info("turn", {
+      turnId: assistantId,
+      status: finished?.status ?? "unknown",
+      verify: intent.verify,
+      rules: ctx.built.trace.rules,
+      contextMs: Math.round(ctx.ms),
+      firstStatusMs: firstStatusMs === undefined ? null : Math.round(firstStatusMs),
+      firstTokenMs: firstTokenMs === undefined ? null : Math.round(firstTokenMs),
+      totalMs: totalMs === undefined ? null : Math.round(totalMs),
+      searches: searchLog.length,
+      retries,
+      ...(usage.totalTokens !== undefined ? { tokens: usage.totalTokens } : {}),
+    });
     try {
       insertTrace(db, {
         turnId: assistantId,
         threadId,
-        intent: { ...intent, forcedSearch: forceSearch, ...(recheck ? { recheck: recheck.state() } : {}) },
+        intent: {
+          ...intent,
+          forcedSearch: forceSearch,
+          ...(recheck
+            ? {
+                recheck: {
+                  ...recheck.state(),
+                  // Every claim put up for re-checking, in words, for the drawer.
+                  claims: ctx.built.recheck.claims.map((c) => ({ entity: c.entity, attribute: c.attribute, said: c.said })),
+                },
+              }
+            : {}),
+        },
         resolvedDates: {
           refs: ctx.built.trace.refs,
           resolved: ctx.built.trace.resolvedDates,
@@ -229,6 +372,12 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
         memoryIds: { ...ctx.built.trace.memoryIds, omittedTurns: ctx.built.trace.omittedTurns },
         memoryChars: ctx.built.trace.memoryChars,
         contextMs: ctx.ms,
+        queries: searchLog,
+        provider,
+        firstStatusMs: firstStatusMs ?? null,
+        firstTokenMs: firstTokenMs ?? null,
+        totalMs: totalMs ?? null,
+        usage: { ...usage, retries },
         ...(errors.length > 0 ? { errors } : {}),
         createdAt: now(),
       });
@@ -252,6 +401,7 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
         userText: message,
         answerText: finished.text,
         sources: sourcesOf(finished.parts),
+        results: resultsByN,
         knownClaims: ctx.built.recheck.claims,
         verify: intent.verify,
       },
@@ -277,7 +427,10 @@ type Part = UIMessagePart<UIDataTypes, UITools>;
  * What the tracker must cover. The news pass (only when the user asks what shipped / launched) is dated
  * from the resolved since date, else from the earliest day a listed claim was said.
  */
-function recheckInput(built: BuiltContext, news: boolean): Parameters<typeof createRecheckTracker>[0] {
+function recheckInput(
+  built: BuiltContext,
+  news: boolean,
+): Parameters<typeof createRecheckTracker>[0] & { newsSince?: string } {
   const items = built.recheck.claims.map((c) => ({ entity: c.entity, attribute: c.attribute, said: c.said }));
   if (!news) return { items };
   const earliest = built.recheck.claims.map((c) => c.said).sort()[0];
@@ -332,7 +485,7 @@ function contextOrFallback(
         refs: times,
         resolvedDates: [],
         ambiguous: [],
-        memoryIds: { turns: [], inThreadTurns: [], claims: [] },
+        memoryIds: { turns: [], inThreadTurns: [], claims: [], claimsAtRecall: [] },
         omittedTurns: 0,
         memoryChars: 0,
       },
