@@ -12,7 +12,7 @@ npm install
 cp .env.example .env      # add GOOGLE_GENERATIVE_AI_API_KEY and EXA_API_KEY (or TAVILY_API_KEY)
 npm run dev               # web on http://localhost:5173, API on :8787
 ```
-Requires Node ≥ 20.11. Keys: Gemini (free at https://aistudio.google.com/apikey), Exa
+Requires Node ≥ 22 (`nvm use` reads `.nvmrc`). Keys: Gemini (free at https://aistudio.google.com/apikey), Exa
 (https://dashboard.exa.ai) and/or Tavily (https://app.tavily.com). To use OpenAI or Anthropic
 instead, set `LLM_PROVIDER` and the matching key and model ids in `.env`.
 
@@ -35,4 +35,4 @@ Then ask:
 
 ## Troubleshooting
 - **"Rate-limited, retrying…"**: the Gemini free tier has low per-day limits. Wait, use another key, or switch provider in `.env`.
-- **Can't start**: `npm run dev` checks your Node version and `.env` first and tells you what's missing.
+- **Can't start**: `npm run dev` checks your Node version (≥ 22) and `.env` first and tells you what's missing.

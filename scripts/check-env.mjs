@@ -5,9 +5,10 @@ import { existsSync, readFileSync } from "node:fs";
 const problems = [];
 const warnings = [];
 
-const [major, minor] = process.versions.node.split(".").map(Number);
-if (major < 20 || (major === 20 && minor < 11)) {
-  problems.push(`Node ${process.versions.node} found; Node >= 20.11 is required.`);
+// AI SDK v7 declares engines node >= 22, so that is our floor (see DECISIONS D8).
+const [major] = process.versions.node.split(".").map(Number);
+if (major < 22) {
+  problems.push(`Node ${process.versions.node} found; Node >= 22 is required (run: nvm use).`);
 }
 
 const env = { ...process.env };

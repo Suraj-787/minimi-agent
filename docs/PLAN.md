@@ -6,16 +6,16 @@ Rules: one phase per working session. Plan mode first. A phase is done only when
 ---
 
 ## Phase 0 — Scaffold
-- [ ] Install runtime deps (latest compatible versions, pinned by the lockfile):
+- [x] Install runtime deps (latest compatible versions, pinned by the lockfile):
   `ai @ai-sdk/google @ai-sdk/openai @ai-sdk/anthropic @ai-sdk/react hono @hono/node-server
    better-sqlite3 chrono-node zod dotenv react react-dom react-markdown remark-gfm`
   (check that the `@ai-sdk/*` majors match `ai@7`, per the v7 docs)
-- [ ] Install dev deps: `typescript tsx vite @vitejs/plugin-react tailwindcss @tailwindcss/vite
+- [x] Install dev deps: `typescript tsx vite @vitejs/plugin-react tailwindcss @tailwindcss/vite
    vitest concurrently @types/node @types/react @types/react-dom @types/better-sqlite3`
-- [ ] `vite.config.ts` (root `web/`, proxy `/api` → `http://localhost:8787`)
-- [ ] `src/lib/env.ts` (zod-validated env, clear error messages), `src/lib/clock.ts` (`now()` with `NOW` override)
-- [ ] Hono server with `GET /api/health`. Web page says "hello".
-- [ ] `predev` runs `scripts/check-env.mjs` (already present)
+- [x] `vite.config.ts` (root `web/`, proxy `/api` → `http://localhost:8787`)
+- [x] `src/lib/env.ts` (zod-validated env, clear error messages), `src/lib/clock.ts` (`now()` with `NOW` override)
+- [x] Hono server with `GET /api/health`. Web page says "hello".
+- [x] `predev` runs `scripts/check-env.mjs` (already present)
 
 **Done when:** a fresh clone runs `npm install && npm run dev`; the browser shows the page;
 `/api/health` returns `{ok:true}`; `npm run typecheck` and `npm test` pass (one clock test).

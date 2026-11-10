@@ -86,3 +86,17 @@ summaries and reconciliation run after the stream.
 
 ## Added during build
 <!-- append new entries here -->
+
+**D8 — Node floor is 22 (`engines >=22`, `.nvmrc` 22), not 20.** AI SDK v7 (`ai@7`, `@ai-sdk/*` 4.x) declares
+`engines.node >=22`; on Node 20, npm silently resolves the v6 line, which CLAUDE.md rules out. `check-env.mjs`,
+README and `engines` all say 22. Node 22.8 is enough (no 22.12 needed) because the other tools are pinned
+to majors that support it.
+*Rejected:* Node 20 + AI SDK v6 (the wrong API for every later phase); Node >=22.12 with the newest
+vite 8 / vitest 5 (forces a Node upgrade for no product benefit).
+
+**D9 — Toolchain pins for the Node 22 floor.** `vite@^6` + `@vitejs/plugin-react@^4` (vite 7/8 need Node 20.19/22.12+),
+`vitest@^3`, `concurrently@^9`, `typescript@~6.0` (not the 7.x native compiler), `@types/node@^22` so types match
+the runtime. `better-sqlite3@~12.9.0`: from 12.10 on the project ships no Node 20 prebuilds, and 12.9.0 has
+prebuilt binaries for Node 20, 22 and 24 on macOS (arm64/x64), Linux and Windows, so installs never need a compiler.
+Known cost: vitest 3 has two npm-audit advisories (tinypool, @vitest/mocker). Dev-only; they affect the test
+runner, not the app. The fix is vitest 5, which needs Node >=22.12; revisit if the floor moves.
