@@ -4,34 +4,43 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadCases } from "../eval/cases";
-import { writeOutputs } from "../eval/output";
+import { persistCase, writeResults } from "../eval/output";
 import { CACHE_BANNER, evalEnvSource, resolveRunMode } from "../eval/policy";
 import { judgeCell, renderResults, renderTranscript, type CaseReport, type RunMeta } from "../eval/render";
 import type { RunResult } from "../eval/runCase";
 
 describe("resolveRunMode", () => {
   it("defaults: real model, full run writes results and transcripts, pause 4 s, one run", () => {
-    expect(resolveRunMode([])).toEqual({ cache: false, repeat: 1, pauseMs: 4000, writeResults: true, writeTranscripts: true });
+    expect(resolveRunMode([])).toEqual({ cache: false, repeat: 1, pauseMs: 4000, resume: false, writeResults: true, persist: true });
   });
   it("--cache writes nothing and says so", () => {
     const m = resolveRunMode(["--cache"]);
-    expect(m).toMatchObject({ cache: true, writeResults: false, writeTranscripts: false });
+    expect(m).toMatchObject({ cache: true, writeResults: false, persist: false });
     expect(m.error).toBeUndefined();
-    expect(m.skipNote).toMatch(/not written/);
+    expect(m.skipNote).toMatch(/nothing was stored/);
   });
   it("--cache --write-results is an error (non-zero exit in the runner)", () => {
     expect(resolveRunMode(["--cache", "--write-results"]).error).toMatch(/--cache/);
   });
-  it("--only runs a subset: transcripts yes, results.md no; --write-results with it is refused", () => {
-    expect(resolveRunMode(["--only", "A2,A3"])).toMatchObject({ only: ["A2", "A3"], writeResults: false, writeTranscripts: true });
+  it("--only runs a subset: finished cases are stored, results.md is not; --write-results with it is refused", () => {
+    expect(resolveRunMode(["--only", "A2,A3"])).toMatchObject({ only: ["A2", "A3"], writeResults: false, persist: true });
     expect(resolveRunMode(["--only", "A2", "--write-results"]).error).toBeDefined();
   });
   it("--no-write writes nothing; --repeat and --pause-ms are validated", () => {
-    expect(resolveRunMode(["--no-write"])).toMatchObject({ writeResults: false, writeTranscripts: false });
+    expect(resolveRunMode(["--no-write"])).toMatchObject({ writeResults: false, persist: false });
     expect(resolveRunMode(["--repeat", "3", "--pause-ms", "0"])).toMatchObject({ repeat: 3, pauseMs: 0 });
     for (const bad of [["--repeat", "0"], ["--repeat", "x"], ["--pause-ms", "-1"], ["--wat"]]) {
       expect(resolveRunMode(bad).error, bad.join(" ")).toBeDefined();
     }
+  });
+});
+
+describe("--resume", () => {
+  it("is allowed with a full or subset run, refused with --cache or --no-write", () => {
+    expect(resolveRunMode(["--resume"])).toMatchObject({ resume: true, writeResults: true, persist: true });
+    expect(resolveRunMode(["--resume", "--only", "A1"])).toMatchObject({ resume: true, writeResults: false });
+    expect(resolveRunMode(["--resume", "--cache"]).error).toMatch(/--cache/);
+    expect(resolveRunMode(["--resume", "--no-write"]).error).toBeDefined();
   });
 });
 
@@ -43,7 +52,7 @@ describe("evalEnvSource", () => {
   });
 });
 
-const meta: RunMeta = { provider: "google", mainModel: "m", smallModel: "s", ranAt: "2026-11-12 05:30 UTC", repeat: 3, pauseMs: 4000 };
+const meta: RunMeta = { provider: "google", mainModel: "m", smallModel: "s", thinking: "tool low / answer default", ranAt: "2026-11-12 05:30 UTC", repeat: 3, pauseMs: 4000 };
 const run = (caseId: string, rep: number, passed: boolean, score: number | undefined, mode: RunResult["searchMode"] = "live"): RunResult => ({
   caseId,
   rep,
@@ -85,32 +94,38 @@ describe("render", () => {
   });
 });
 
-describe("writeOutputs", () => {
+describe("persistCase / writeResults", () => {
   let dir = "";
   afterEach(() => dir && rmSync(dir, { recursive: true, force: true }));
   const tmp = () => (dir = mkdtempSync(join(tmpdir(), "eval-out-")));
+  const ids = { provider: "google", mainModel: "m", smallModel: "s", thinking: "tool low / answer default" };
+  const save = (d: string, args: string[]) => persistCase(d, resolveRunMode(args), A!, reports[0]!.runs, ids, meta, "2026-11-12T05:30:00.000Z");
 
-  it("a --cache run never creates results.md or transcripts", () => {
+  it("a --cache run stores nothing and writes no results.md", () => {
     const d = tmp();
-    expect(writeOutputs(d, resolveRunMode(["--cache"]), reports, meta)).toEqual([]);
+    expect(save(d, ["--cache"])).toEqual([]);
+    expect(writeResults(d, resolveRunMode(["--cache"]), reports, meta)).toBeUndefined();
     expect(readdirSync(d)).toEqual([]);
   });
   it("--no-write writes nothing", () => {
     const d = tmp();
-    expect(writeOutputs(d, resolveRunMode(["--no-write"]), reports, meta)).toEqual([]);
+    expect(save(d, ["--no-write"])).toEqual([]);
     expect(readdirSync(d)).toEqual([]);
   });
-  it("a subset run writes transcripts but not results.md", () => {
+  it("a finished case gets a transcript and a stored result; a subset run still does not write results.md", () => {
     const d = tmp();
-    writeOutputs(d, resolveRunMode(["--only", "A1"]), reports, meta);
+    const written = save(d, ["--only", "A1"]);
+    expect(written.map((p) => p.replace(d, ""))).toEqual([`/transcripts/${A!.id}.md`, `/.tmp/results/${A!.id}.json`]);
+    expect(writeResults(d, resolveRunMode(["--only", "A1"]), reports, meta)).toBeUndefined();
     expect(existsSync(join(d, "results.md"))).toBe(false);
-    expect(readdirSync(join(d, "transcripts")).sort()).toEqual([`${A!.id}.md`, `${B!.id}.md`].sort());
   });
-  it("a full uncached run writes both", () => {
+  it("a full uncached run with every case present writes results.md; a missing case withholds it", () => {
     const d = tmp();
-    writeOutputs(d, resolveRunMode([]), reports, meta);
+    expect(writeResults(d, resolveRunMode([]), reports, meta)).toBe(join(d, "results.md"));
     expect(readFileSync(join(d, "results.md"), "utf8")).toContain("# Eval results");
-    expect(existsSync(join(d, "transcripts", `${A!.id}.md`))).toBe(true);
+    rmSync(join(d, "results.md"));
+    expect(writeResults(d, resolveRunMode([]), [reports[0]!, { case: B!, runs: [] }], meta)).toBeUndefined();
+    expect(existsSync(join(d, "results.md"))).toBe(false);
   });
 });
 

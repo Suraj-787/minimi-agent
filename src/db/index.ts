@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 
 export type Db = Database.Database;
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 /** Idempotent: safe to call on every boot and on an already-migrated file. */
 export function migrate(db: Db): void {
@@ -23,6 +23,10 @@ export function migrate(db: Db): void {
   const traceCols = db.pragma("table_info(traces)") as { name: string }[];
   if (!traceCols.some((c) => c.name === "first_status_ms")) {
     db.exec("ALTER TABLE traces ADD COLUMN first_status_ms INTEGER");
+  }
+  // v3 → v4: traces.steps_json (per-step model/search timing).
+  if (!(db.pragma("table_info(traces)") as { name: string }[]).some((c) => c.name === "steps_json")) {
+    db.exec("ALTER TABLE traces ADD COLUMN steps_json TEXT");
   }
   db.pragma(`user_version = ${SCHEMA_VERSION}`);
 }

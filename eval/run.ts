@@ -8,10 +8,10 @@ import { openDb } from "../src/db/index";
 import { EnvError, loadEnv } from "../src/lib/env";
 import { createSearchFromEnv } from "../src/search/index";
 import { loadCases } from "./cases";
-import { writeOutputs } from "./output";
+import { runAll, coverageNote } from "./orchestrate";
+import { writeResults } from "./output";
 import { CACHE_BANNER, evalEnvSource, resolveRunMode, USAGE } from "./policy";
-import { passCount, judgeCell, type CaseReport, type RunMeta } from "./render";
-import { QuotaExhausted, runCase } from "./runCase";
+import { passCount, type RunMeta } from "./render";
 
 // `npm run eval`: real model, real search quota. Never run by tests or CI (CLAUDE.md).
 const EVAL_DIR = dirname(fileURLToPath(import.meta.url));
@@ -49,6 +49,7 @@ async function main(): Promise<number> {
     provider: e.LLM_PROVIDER,
     mainModel: e.MAIN_MODEL,
     smallModel: e.SMALL_MODEL,
+    thinking: `tool ${e.MAIN_THINKING} / answer ${e.MAIN_THINKING_ANSWER}`,
     ranAt: realNow().toISOString().slice(0, 16).replace("T", " ") + " UTC",
     repeat: mode.repeat,
     pauseMs: mode.pauseMs,
@@ -57,42 +58,34 @@ async function main(): Promise<number> {
   if (mode.cache) console.log(`\n!!! ${CACHE_BANNER} !!!\n`);
   console.log(`${cases.length} case(s) × ${mode.repeat} run(s), ${mode.pauseMs} ms pause. Per-case DBs: eval/.tmp/<id>.db`);
 
-  const reports: CaseReport[] = cases.map((c) => ({ case: c, runs: [] }));
-  let first = true;
+  const ids = { provider: meta.provider, mainModel: meta.mainModel, smallModel: meta.smallModel, thinking: meta.thinking };
+  let outcome;
   try {
-    for (const report of reports) {
-      for (let rep = 1; rep <= mode.repeat; rep++) {
-        if (!first && mode.pauseMs > 0) await sleep(mode.pauseMs);
-        first = false;
-        const started = performance.now();
-        const run = await runCase(deps, report.case, rep);
-        report.runs.push(run);
-        const failed = run.hard.filter((h) => !h.pass).map((h) => h.name);
-        console.log(
-          `${run.passed ? "PASS" : "FAIL"} ${report.case.id} run ${rep}/${mode.repeat} [${run.searchMode}] judge ${judgeCell([run])} (${((performance.now() - started) / 1000).toFixed(1)} s)${failed.length ? ` ✗ ${failed.join("; ")}` : ""}`,
-        );
-      }
-    }
-  } catch (err) {
-    if (err instanceof QuotaExhausted) {
-      const done = reports.reduce((n, r) => n + r.runs.length, 0);
-      console.error(`\nStopped: ${err.message}. ${done} run(s) finished before it; nothing was written (no results.md, no transcripts).`);
-      console.error("The daily free quota resets tomorrow, or use another key or provider.");
-      return 1;
-    }
-    throw err;
+    outcome = await runAll({ deps, cases, mode, ids, meta, evalDir: EVAL_DIR, sleep: (ms) => sleep(ms).then(() => undefined), now: realNow, log: console.log });
   } finally {
     cacheDb?.close();
   }
 
-  const finished = reports.filter((r) => r.runs.length > 0);
-  const written = writeOutputs(EVAL_DIR, mode, finished, meta);
-  const totalRuns = finished.reduce((n, r) => n + r.runs.length, 0);
-  const passed = finished.reduce((n, r) => n + passCount(r.runs), 0);
+  const { reports } = outcome;
+  if (outcome.quota) {
+    console.error(`\nStopped: ${outcome.quota.message}. ${coverageNote(outcome)}`);
+    console.error(
+      mode.persist
+        ? "Finished cases were saved (eval/.tmp/results, eval/transcripts). eval/results.md was not written: it needs every case.\nThe daily quota resets tomorrow; then run: npm run eval -- --resume"
+        : "This run does not store results, so nothing was saved. The daily free quota resets tomorrow, or use another key or provider.",
+    );
+    return 1;
+  }
+
+  const done = reports.filter((r) => r.runs.length > 0);
+  const totalRuns = done.reduce((n, r) => n + r.runs.length, 0);
+  const passed = done.reduce((n, r) => n + passCount(r.runs), 0);
   console.log(`\n${passed}/${totalRuns} runs passed on the deterministic checks.`);
-  for (const r of finished) console.log(`  ${r.case.id}: ${passCount(r.runs)}/${r.runs.length}`);
+  for (const r of done) console.log(`  ${r.case.id}: ${passCount(r.runs)}/${r.runs.length}${outcome.resumed.has(r.case.id) ? " (stored)" : ""}`);
   if (mode.cache) console.log(`\n!!! ${CACHE_BANNER} !!!`);
-  if (written.length > 0) console.log(`\nwrote:\n${written.map((p) => `  ${p}`).join("\n")}`);
+  const resultsPath = writeResults(EVAL_DIR, mode, reports, meta);
+  if (resultsPath) console.log(`\nwrote ${resultsPath}`);
+  else if (mode.writeResults) console.log(`\neval/results.md not written. ${coverageNote(outcome)}`);
   if (mode.skipNote) console.log(`\n${mode.skipNote}`);
   return 0;
 }

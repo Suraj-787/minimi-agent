@@ -31,8 +31,9 @@ Then ask:
 | `npm run dev` | server + web with hot reload |
 | `npm run chat` | terminal chat using the same agent core |
 | `npm test` | unit tests (no network) |
-| `npm run eval` | full eval (fixed date + seeded history) → `eval/results.md` + `eval/transcripts/`; uses API quota. Flags: `--only A2,A3`, `--repeat N`, `--pause-ms MS`, `--no-write`, `--cache` (dev only, writes nothing) |
+| `npm run eval` | full eval (fixed date + seeded history) → `eval/results.md` + `eval/transcripts/`; uses API quota. Each finished case is saved at once, so a daily-quota stop keeps it. Flags: `--resume` (skip cases already stored for these models, write `results.md` when all are), `--only A2,A3`, `--repeat N`, `--pause-ms MS`, `--no-write`, `--cache` (dev only, stores nothing) |
 
 ## Troubleshooting
 - **"Rate-limited, retrying…"**: the Gemini free tier has low per-day limits. Wait, use another key, or switch provider in `.env`.
+- **Slow first token on verify questions**: `MAIN_THINKING` (default `low`) sets the thinking effort of the main model's search steps and `MAIN_THINKING_ANSWER` the answer step (Google only; see `.env.example`). The "why?" drawer shows model vs search time per step.
 - **Can't start**: `npm run dev` checks your Node version (≥ 22) and `.env` first and tells you what's missing.

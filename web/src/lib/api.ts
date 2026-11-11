@@ -95,6 +95,15 @@ export interface DebugInfo {
   provider: string | null;
   timings: { contextMs: number | null; firstStatusMs?: number | null; firstTokenMs: number | null; totalMs: number | null };
   usage: { totalTokens?: number; steps?: number; retries?: number } | null;
+  steps: {
+    step: number;
+    mode: "auto" | "force" | "none";
+    thinking?: "tool" | "answer";
+    modelMs: number;
+    firstPartMs: number | null;
+    searchMs: number;
+    queries: number;
+  }[];
   errors: unknown[];
   memoryWrites: {
     op: string;

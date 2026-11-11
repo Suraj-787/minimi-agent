@@ -125,6 +125,35 @@ export function WhyDrawer({ turnId, onClose }: { turnId: string; onClose: () => 
             </p>
             {info.usage?.retries ? <p>Model retries: {info.usage.retries}</p> : null}
           </Section>
+          <Section title="Steps (model vs search)">
+            {(info.steps ?? []).length === 0 ? (
+              <p className="text-neutral-500">not recorded for this answer</p>
+            ) : (
+              <table className="w-full text-xs">
+                <thead className="text-left text-neutral-500">
+                  <tr>
+                    <th className="pr-2 font-normal">Step</th>
+                    <th className="pr-2 font-normal">Model</th>
+                    <th className="pr-2 font-normal">1st part</th>
+                    <th className="font-normal">Search</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {info.steps.map((s) => (
+                    <tr key={s.step}>
+                      <td className="pr-2">
+                        {s.step + 1} {s.mode === "force" ? "forced" : s.mode === "none" ? "answer only" : ""}
+                        {s.thinking ? <span className="text-neutral-500"> · {s.thinking} thinking</span> : null}
+                      </td>
+                      <td className="pr-2">{ms(s.modelMs)}</td>
+                      <td className="pr-2">{ms(s.firstPartMs)}</td>
+                      <td>{s.queries > 0 ? `${ms(s.searchMs)} (${s.queries} q)` : "–"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </Section>
           <Section title="Memory writes">
             {info.memoryWrites.length === 0 ? (
               <p className="text-neutral-500">none (or still being written)</p>

@@ -6,12 +6,15 @@ import type { Db } from "../db/index";
 import type { Env } from "../lib/env";
 import { llmCacheMiddleware } from "../lib/llmCache";
 import { log } from "../lib/log";
+import { thinkingOptions, type MainThinking } from "./thinking";
 
 export interface Models {
   /** Chat + tool use. */
   main: LanguageModel;
   /** Background work: claim extraction, eval judge. */
   small: LanguageModel;
+  /** Thinking effort for the main model per kind of step (D65); undefined = provider default everywhere. */
+  mainThinking?: MainThinking;
 }
 
 type ModelEnv = Pick<
@@ -23,7 +26,8 @@ type ModelEnv = Pick<
   | "OPENAI_API_KEY"
   | "ANTHROPIC_API_KEY"
   | "DEV_LLM_CACHE"
->;
+> &
+  Partial<Pick<Env, "MAIN_THINKING" | "MAIN_THINKING_ANSWER">>;
 
 export interface ModelOptions {
   /**
@@ -58,7 +62,13 @@ export function getModels(e: ModelEnv, opts?: ModelOptions): Models {
     log.warn("!!! DEV_LLM_CACHE is ON: model responses are replayed from SQLite (llm_cache). Dev only; unset it to talk to the real model.");
   }
   const models = rawModels(e);
-  return { main: withDevCache(models.main, opts, on), small: withDevCache(models.small, opts, on) };
+  const tool = thinkingOptions(e.LLM_PROVIDER, e.MAIN_MODEL, e.MAIN_THINKING ?? "default");
+  const answer = thinkingOptions(e.LLM_PROVIDER, e.MAIN_MODEL, e.MAIN_THINKING_ANSWER ?? "default");
+  return {
+    main: withDevCache(models.main, opts, on),
+    small: withDevCache(models.small, opts, on),
+    ...(tool || answer ? { mainThinking: { ...(tool ? { tool } : {}), ...(answer ? { answer } : {}) } } : {}),
+  };
 }
 
 function rawModels(e: ModelEnv): Models {

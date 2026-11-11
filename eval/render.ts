@@ -5,12 +5,16 @@ import type { JudgeOutcome, RunResult } from "./runCase";
 export interface CaseReport {
   case: EvalCase;
   runs: RunResult[];
+  /** When this case finished, "YYYY-MM-DD HH:MM UTC". Differs between cases after a --resume. */
+  ranAt?: string;
 }
 
 export interface RunMeta {
   provider: string;
   mainModel: string;
   smallModel: string;
+  /** "tool low / answer default" */
+  thinking: string;
   ranAt: string;
   repeat: number;
   pauseMs: number;
@@ -60,6 +64,14 @@ function searchModeOf(runs: RunResult[]): string {
 
 const lastTurn = (r: RunResult) => r.turns[r.turns.length - 1];
 
+/** One date, or "first → last" when a --resume carried the run over several days. */
+function ranSpan(reports: CaseReport[], meta: RunMeta): string {
+  const times = reports.flatMap((r) => (r.ranAt ? [r.ranAt] : [])).sort();
+  const first = times[0] ?? meta.ranAt;
+  const last = times[times.length - 1] ?? meta.ranAt;
+  return first === last ? first : `${first} → ${last} (resumed across runs)`;
+}
+
 export function renderResults(reports: CaseReport[], meta: RunMeta): string {
   const allRuns = reports.flatMap((r) => r.runs);
   const full = reports.filter((r) => r.runs.length > 0 && passCount(r.runs) === r.runs.length).length;
@@ -73,7 +85,7 @@ export function renderResults(reports: CaseReport[], meta: RunMeta): string {
   const lines: string[] = [
     "# Eval results",
     "",
-    `Uncached run against the real model. Ran ${meta.ranAt}. Provider \`${meta.provider}\`, main \`${meta.mainModel}\`, small/judge \`${meta.smallModel}\`.`,
+    `Uncached run against the real model. Ran ${ranSpan(reports, meta)}. Provider \`${meta.provider}\`, main \`${meta.mainModel}\`, small/judge \`${meta.smallModel}\`, thinking ${meta.thinking}.`,
     `Frozen clock per case (\`now\` in cases.json), ${meta.repeat} run${meta.repeat === 1 ? "" : "s"} per case, ${ms(meta.pauseMs)} pause between runs.`,
     "",
     "Pass/fail comes from the deterministic checks only. The judge score (1-5) is informational; a score of 2 or less is flagged for review. Soft checks are warnings.",
@@ -130,7 +142,7 @@ export function renderTranscript(c: EvalCase, runs: RunResult[], meta: RunMeta):
     `- Category: ${c.category}`,
     `- Clock: ${c.now} (${c.timezone}) · seed: ${c.seed ? "yes" : "no"}`,
     `- Search: ${searchModeOf(runs)}`,
-    `- Models: ${meta.provider} · main \`${meta.mainModel}\` · small \`${meta.smallModel}\``,
+    `- Models: ${meta.provider} · main \`${meta.mainModel}\` · small \`${meta.smallModel}\` · thinking ${meta.thinking}`,
     `- Ran: ${meta.ranAt}`,
     `- Pass: ${passCount(runs)}/${runs.length}`,
     "",

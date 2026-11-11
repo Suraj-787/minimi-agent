@@ -251,6 +251,8 @@ export interface NewTrace {
   totalMs?: number | null;
   usage?: unknown;
   errors?: unknown;
+  /** Per model step: mode, model ms, search ms (D65). */
+  steps?: unknown;
   createdAt: Date;
 }
 
@@ -259,16 +261,16 @@ export function insertTrace(db: Db, t: NewTrace): void {
   db.prepare(
     `INSERT INTO traces (turn_id, thread_id, intent_json, resolved_dates_json, recall_rules_json, memory_ids_json,
                          memory_chars, context_ms, queries_json, provider, first_status_ms, first_token_ms, total_ms, usage_json,
-                         errors_json, created_at)
+                         errors_json, steps_json, created_at)
      VALUES (@turn_id, @thread_id, @intent_json, @resolved_dates_json, @recall_rules_json, @memory_ids_json,
              @memory_chars, @context_ms, @queries_json, @provider, @first_status_ms, @first_token_ms, @total_ms, @usage_json,
-             @errors_json, @created_at)
+             @errors_json, @steps_json, @created_at)
      ON CONFLICT(turn_id) DO UPDATE SET
        intent_json = excluded.intent_json, resolved_dates_json = excluded.resolved_dates_json,
        recall_rules_json = excluded.recall_rules_json, memory_ids_json = excluded.memory_ids_json,
        memory_chars = excluded.memory_chars, context_ms = excluded.context_ms, queries_json = excluded.queries_json,
        provider = excluded.provider, first_status_ms = excluded.first_status_ms, first_token_ms = excluded.first_token_ms, total_ms = excluded.total_ms,
-       usage_json = excluded.usage_json, errors_json = excluded.errors_json`,
+       usage_json = excluded.usage_json, errors_json = excluded.errors_json, steps_json = excluded.steps_json`,
   ).run({
     turn_id: t.turnId,
     thread_id: t.threadId,
@@ -285,6 +287,7 @@ export function insertTrace(db: Db, t: NewTrace): void {
     total_ms: t.totalMs == null ? null : Math.round(t.totalMs),
     usage_json: t.usage === undefined ? null : JSON.stringify(t.usage),
     errors_json: t.errors === undefined ? null : JSON.stringify(t.errors),
+    steps_json: t.steps === undefined ? null : JSON.stringify(t.steps),
     created_at: t.createdAt.toISOString(),
   });
 }
@@ -305,6 +308,7 @@ export interface TraceRow {
   total_ms: number | null;
   usage_json: string | null;
   errors_json: string | null;
+  steps_json: string | null;
   created_at: string;
 }
 

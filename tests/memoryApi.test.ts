@@ -128,6 +128,10 @@ describe("GET /api/debug/:turnId", () => {
     expect(d.timings.firstTokenMs).toBeGreaterThanOrEqual(0);
     expect(d.timings.totalMs).toBeGreaterThanOrEqual(0);
     expect(Array.isArray(d.memoryWrites)).toBe(true);
+    // One model step, no search: its timing is in the payload for the drawer (D65).
+    expect(d.steps).toHaveLength(1);
+    expect(d.steps[0]).toMatchObject({ step: 0, searchMs: 0, queries: 0 });
+    expect(d.steps[0].modelMs).toBeGreaterThanOrEqual(0);
   });
 
   it("404 for an unknown turn", async () => {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseThinking, type ThinkingSetting } from "./thinking";
 
 // .env.example ships keys with empty values; "" must behave like "unset" so defaults apply.
 const blankToUndefined = (v: unknown): unknown =>
@@ -34,6 +35,18 @@ const providerKeyVar: Record<Provider, string> = {
 // Gemini ids are only a sane default for Gemini; other providers must name their models.
 const GOOGLE_DEFAULTS = { main: "gemini-flash-latest", small: "gemini-flash-lite-latest" };
 
+// default | minimal | low | medium | high | a token budget. Only the Google provider uses it (agent/thinking.ts).
+const thinkingSchema = (fallback: string) =>
+  z.preprocess(
+    blankToUndefined,
+    z
+      .string()
+      .trim()
+      .default(fallback)
+      .refine((v) => parseThinking(v) !== undefined, "must be default, minimal, low, medium, high or a token budget (integer)")
+      .transform((v) => parseThinking(v) as ThinkingSetting),
+  );
+
 const rawSchema = z.object({
   LLM_PROVIDER: z.preprocess(
     (v) => (typeof v === "string" ? blankToUndefined(v.toLowerCase()) : v),
@@ -51,6 +64,8 @@ const rawSchema = z.object({
   MAX_STEPS: z.preprocess(blankToUndefined, z.coerce.number().int().min(1).max(10).default(4)),
   NOW: z.preprocess(blankToUndefined, isoWithOffsetSchema.optional()),
   DEV_LLM_CACHE: z.preprocess(blankToUndefined, z.enum(["0", "1"]).default("0")),
+  MAIN_THINKING: thinkingSchema("low"),
+  MAIN_THINKING_ANSWER: thinkingSchema("default"),
 });
 
 const envSchema = rawSchema

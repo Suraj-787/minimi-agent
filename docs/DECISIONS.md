@@ -497,3 +497,39 @@ but no tool definitions is rejected by some providers).
 **D64 — `noRawLinks` is a soft check.** Raw URLs in an answer break the "[n] only" style rule but not correctness, and a hard failure
 for it hid real results. The trace still records `rawLinks`; eval cases list `noRawLinks` under `softChecks`, where it shows as a
 warning and never fails a case.
+
+## Phase 6 — after the first full eval run
+
+**D65 — Thinking effort is an env knob, and every step is timed.** Verify turns on Flash took 38-78 s to the first token. Gemini
+3 and later take `providerOptions.google.thinkingConfig.thinkingLevel` (`minimal|low|medium|high`); Gemini 2.5 takes a
+`thinkingBudget` instead (levels are unsupported there), so `agent/thinking.ts` maps a level to a budget for 2.5 ids (minimal 0,
+low 1024, medium 4096, high 8192; Pro keeps its 128 floor) and sends a number as a budget. `MAIN_THINKING` (default `low`)
+applies to tool-calling steps: the first step and every forced one. `MAIN_THINKING_ANSWER` (default `default`, meaning the
+provider decides) applies to later steps, which usually write the answer; it stays unset so answer quality, not just speed, is
+the user's call. Only the Google provider has the option wired; others ignore it. It is applied in `toolChoiceEnforcement` (the
+same model middleware as D63), so it covers the forced step's `auto` fallback too and needs no change in the callers: `getModels`
+returns `mainThinking` next to `main` and `small`. Each step is also timed there: model ms (all attempts, retries included),
+time to the first text or tool-call part, and the search time spent inside that step. They are stored in `traces.steps_json`
+(schema v4, migration adds the column), returned by `/api/debug` as `steps`, and shown in the "why?" drawer. *Limit:* "tool
+step" is a guess from the step number and the forced flag; a later auto step that searches again is treated as an answer step.
+The eval stored-result key includes the two thinking settings, because they change latency and answers.
+
+**D66 — Eval results are saved per case and can be resumed.** The first full run stopped on a daily 429 at A13 and discarded the
+twelve cases it had finished. Now each case is saved when its last repetition ends: `eval/transcripts/<id>.md` and
+`eval/.tmp/results/<id>.json` (provider, main/small model ids, thinking, finish time, case hash, repetitions, every run). A quota
+stop keeps them; a case cut short is not saved. `--resume` reuses a stored result only when the provider, both model ids, the
+thinking settings, a hash of the case definition (checks, rubric, mock pages) and the repeat count all match, so editing a check
+or switching model reruns that case. `eval/results.md` is written only when every case has a stored uncached result: if some are
+missing the runner lists them. Its header shows the date range when a resume spanned days. `--cache` runs, and `--resume` with
+`--cache`, are refused or store nothing, as before. *Not detected:* a change in the agent code between runs; delete
+`eval/.tmp/results` for a clean start. The orchestration lives in `eval/orchestrate.ts` so the quota and resume paths are tested
+with mock models.
+
+**D67 — A model that rejects the thinking setting never breaks a turn.** Thinking options differ by model (a level on Gemini 3, a
+budget on 2.5, nothing on some), and a wrong one is an HTTP 400 that names thinking. In `toolChoiceEnforcement`, if a call that
+carried a thinking setting throws a 400 whose message or body mentions "thinking", the call is repeated once with no thinking
+option at all. The model (`provider:modelId`) is remembered for the rest of the process, so later steps and turns skip the setting
+and make no failed attempt; one warning is logged per model (`hint: set MAIN_THINKING=default`, no message body). A 400 that does
+not mention thinking, and any other status, is still an error. The trace's step timing shows `thinking` only when it was really
+sent. *Limit:* only a thrown HTTP error is handled; a provider that reports the 400 as an error part inside an open stream is not.
+Because the memory is per process, set `MAIN_THINKING=default` in `.env` to stop the one wasted attempt after a restart.

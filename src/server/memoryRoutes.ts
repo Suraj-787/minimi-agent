@@ -129,6 +129,8 @@ export function buildDebug(db: Db, trace: TraceRow) {
     provider: trace.provider,
     timings: { contextMs: trace.context_ms, firstStatusMs: trace.first_status_ms, firstTokenMs: trace.first_token_ms, totalMs: trace.total_ms },
     usage: parse(trace.usage_json) ?? null,
+    // Per model step: where the time went (model vs search). Empty for turns traced before D65.
+    steps: parse(trace.steps_json) ?? [],
     errors: parse(trace.errors_json) ?? [],
     // Written after the reply, so read live rather than stored in the trace row.
     memoryWrites: memoryWritesForTurn(db, trace.turn_id).map((w) => labelWrite(w, db)),

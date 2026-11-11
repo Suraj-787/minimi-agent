@@ -39,7 +39,8 @@ import { buildContext, type BuiltContext } from "./context";
 import { friendlyError } from "./errors";
 import { detectIntent } from "./intent";
 import { createRecheckTracker } from "./recheck";
-import { createStepPolicy, toolChoiceEnforcement } from "./stepPolicy";
+import { createStepPolicy, toolChoiceEnforcement, type StepMode } from "./stepPolicy";
+import type { StepKind } from "./thinking";
 import { HISTORY_MAX_MESSAGES, selectHistory, toHistoryMessages } from "./history";
 import type { Models } from "./model";
 import { SYSTEM_PROMPT, buildDynamicBlock, withDynamicBlock } from "./prompts";
@@ -145,6 +146,27 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
   const assistantId = randomUUID();
   // Which steps are forced to search / forbidden to (D63). The SDK itself always runs on `auto`.
   const stepPolicy = createStepPolicy({ maxSteps });
+  // Where each step's time went (model vs search), for the trace and the "why?" drawer. A step's search
+  // time is added when its tool call finishes, which happens before the next step starts.
+  const stepTimings = new Map<number, StepTiming>();
+  const timing = (step: number): StepTiming => {
+    let t = stepTimings.get(step);
+    if (!t) stepTimings.set(step, (t = { step, mode: "auto", modelMs: 0, firstPartMs: null, searchMs: 0, queries: 0 }));
+    return t;
+  };
+  const timedSearch: Search = {
+    run: async (input, turn, signal) => {
+      const t0 = performance.now();
+      const step = stepPolicy.current().step;
+      try {
+        return await search.run(input, turn, signal);
+      } finally {
+        const t = timing(step);
+        t.searchMs += performance.now() - t0;
+        t.queries += input.queries.length;
+      }
+    },
+  };
 
   // 3. Persist exactly once, from whichever path gets there first (normal end, error, or the
   //    safety net below). Memoised so the user message can never end up without an assistant row.
@@ -227,6 +249,8 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
                 policy: stepPolicy,
                 toolName: "web_search",
                 owed: () => (recheck ? owedWords(recheck.state()) : undefined),
+                ...(models.mainThinking ? { thinking: models.mainThinking } : {}),
+                onCall: (c) => Object.assign(timing(c.step), { mode: c.mode, modelMs: c.modelMs, firstPartMs: c.firstPartMs, ...(c.thinking ? { thinking: c.thinking } : {}) }),
               }),
             });
       const result = streamText({
@@ -235,7 +259,7 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
         messages,
         tools: {
           web_search: createWebSearchTool({
-            search,
+            search: timedSearch,
             turn: createTurnCounter(),
             emit,
             onOutcome: (o) => {
@@ -392,6 +416,7 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
         firstTokenMs: firstTokenMs ?? null,
         totalMs: totalMs ?? null,
         usage: { ...usage, retries },
+        steps: [...stepTimings.values()].sort((a, b) => a.step - b.step).map(roundTiming),
         ...(errors.length > 0 ? { errors } : {}),
         createdAt: now(),
       });
@@ -436,6 +461,23 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
 }
 
 type Part = UIMessagePart<UIDataTypes, UITools>;
+
+/** One model step as the trace stores it. Times are milliseconds. */
+export interface StepTiming {
+  step: number;
+  mode: StepMode;
+  /** Thinking setting used: "tool" or "answer" (D65); absent when none was configured. */
+  thinking?: StepKind;
+  modelMs: number;
+  /** Until the first text or tool-call part of this step. */
+  firstPartMs: number | null;
+  searchMs: number;
+  queries: number;
+}
+
+function roundTiming(t: StepTiming): StepTiming {
+  return { ...t, modelMs: Math.round(t.modelMs), firstPartMs: t.firstPartMs === null ? null : Math.round(t.firstPartMs), searchMs: Math.round(t.searchMs) };
+}
 
 /** What the tracker still owes, for the note shown to the model when forcing is abandoned. */
 function owedWords(state: { uncovered: string[]; newsSince?: string; newsDone: boolean }): string | undefined {

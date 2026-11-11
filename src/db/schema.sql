@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS traces (
   total_ms            INTEGER,
   usage_json          TEXT,
   errors_json         TEXT,
+  steps_json          TEXT,      -- per model step: mode, model ms, search ms
   created_at          TEXT NOT NULL
 );
 

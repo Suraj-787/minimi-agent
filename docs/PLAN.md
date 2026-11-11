@@ -106,6 +106,7 @@ forgetting a claim removes it from the next turn's recall (test); the debug draw
   would have written, exits non-zero if `--write-results` is also given) and writes nothing.
 
 - [x] Eval-run fixes (D63, D64): a forced search step never fails the turn (retry once on auto, cap, last step never forced, `forcedSearchViolation` in the trace); `noRawLinks` is a soft check
+- [x] Quota-safe evals (D65, D66): each finished case saved at once (transcript + stored result), `--resume`, results.md only when every case is stored; per-step model/search timing in the trace and the why? drawer; `MAIN_THINKING` / `MAIN_THINKING_ANSWER` knobs
 
 **Done when:** `npm run eval` (uncached, real model) finishes on the free tier and results.md is committed; `--cache` shows the
 banner and never touches results.md (test).
