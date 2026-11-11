@@ -1,5 +1,6 @@
 import type { LanguageModelMiddleware } from "ai";
 import { log } from "../lib/log";
+import { cleanPrompt, CLOSED_NOTE, freshPrompt, type SearchRun } from "./closing";
 import { apiErrorOf } from "../lib/retry";
 import { mergeProviderOptions, stepKind, type MainThinking, type StepKind } from "./thinking";
 
@@ -106,9 +107,28 @@ async function startsToolCall(stream: ReadableStream<Part>): Promise<{ called: b
 export const NO_ANSWER_TEXT =
   "I couldn't finish checking this: the search step ran out before I could write an answer. Please ask again.";
 
-/** The note for the one retry of a no-tools step that ended with no text (D69). */
-export const CLOSED_NOTE =
-  "Searching is closed. Answer now from the results above; mark any item without evidence Couldn't verify.";
+export { CLOSED_NOTE } from "./closing";
+
+/**
+ * One request to the provider, as the trace keeps it (D72). A step can make several: a forced step the model ignored
+ * is retried on auto, and a no-tools step with no text is retried once from a clean prompt. What was sent (tool choice,
+ * declared tools) and what came back (finish reason, text, tool calls with their arguments) are both recorded, so a
+ * failed step can be read from the trace without guessing.
+ */
+export interface CallRecord {
+  kind: "auto" | "forced" | "forced-retry-auto" | "closed" | "closed-retry";
+  /** "auto", "none" or "tool:<name>". */
+  toolChoice: string;
+  /** Whether the request declared any tool. False on every no-tools step. */
+  hasTools: boolean;
+  /** Names of the declared tools. */
+  activeTools: string[];
+  /** The provider's finish reason for this request. */
+  finishReason?: string;
+  textChars: number;
+  /** Tool calls the provider returned, with their arguments (clipped). On a closed* kind they were dropped, never run. */
+  toolCalls: { name: string; input: string }[];
+}
 
 /** What one step did, for the trace (D69): the provider's finish reason, tool calls, text size. */
 export interface StepStats {
@@ -118,9 +138,38 @@ export interface StepStats {
   /** Tool calls on a no-tools step: dropped, never executed. */
   droppedToolCalls: string[];
   textChars: number;
+  /** Every request this step made, in order (D72). */
+  calls: CallRecord[];
 }
 
-const newStats = (): StepStats => ({ toolCalls: [], droppedToolCalls: [], textChars: 0 });
+const newStats = (): StepStats => ({ toolCalls: [], droppedToolCalls: [], textChars: 0, calls: [] });
+
+const INPUT_CLIP = 500;
+
+function describeRequest(p: { toolChoice?: { type: string; toolName?: string }; tools?: ReadonlyArray<{ type: string; name?: string }> }): Pick<CallRecord, "toolChoice" | "hasTools" | "activeTools"> {
+  const tools = (p.tools ?? []).flatMap((t) => (t.type === "function" && t.name ? [t.name] : []));
+  const c = p.toolChoice;
+  return { toolChoice: c ? (c.type === "tool" ? `tool:${c.toolName ?? "?"}` : c.type) : "auto", hasTools: (p.tools ?? []).length > 0, activeTools: tools };
+}
+
+/** Copies the stream through and fills in the record from what the provider returned. */
+function tapCall(rec: CallRecord, stream: ReadableStream<Part>): ReadableStream<Part> {
+  return stream.pipeThrough(
+    new TransformStream<Part, Part>({
+      transform(part, controller) {
+        if (part.type === "text-delta") rec.textChars += String((part as { delta?: unknown }).delta ?? "").length;
+        else if (part.type === "tool-call") {
+          const p = part as { toolName?: unknown; input?: unknown };
+          rec.toolCalls.push({ name: String(p.toolName ?? "?"), input: (typeof p.input === "string" ? p.input : JSON.stringify(p.input ?? "")).slice(0, INPUT_CLIP) });
+        } else if (part.type === "finish") {
+          const unified = (part as { finishReason?: { unified?: unknown } }).finishReason?.unified;
+          if (typeof unified === "string") rec.finishReason = unified;
+        }
+        controller.enqueue(part);
+      },
+    }),
+  );
+}
 
 function observe(part: Part, stats: StepStats, toolBucket: "toolCalls" | "droppedToolCalls"): void {
   if (part.type === "text-delta") stats.textChars += String((part as { delta?: unknown }).delta ?? "").length;
@@ -232,6 +281,8 @@ export interface EnforcementOptions {
   toolName: string;
   /** What is still unsearched, in words ("not searched: Neon, Render"), or undefined. */
   owed: () => string | undefined;
+  /** The searches run so far, as plain text for a no-tools step (D72). */
+  searches?: () => readonly SearchRun[];
   /** Thinking effort per kind of step; merged into the provider options of each call. */
   thinking?: MainThinking;
   /** Called once per step when its stream has ended. Feeds the trace's per-step timing. */
@@ -321,20 +372,29 @@ async function call(
   step: number,
   stats: StepStats,
 ): Promise<StreamResult> {
-  const doStream = (p: typeof params) => model.doStream(p as never);
-  if (mode === "auto") return doStream(params);
+  // Every request is recorded: what was sent and what came back (D72).
+  const send = async (kind: CallRecord["kind"], p: typeof params): Promise<StreamResult> => {
+    const res = await model.doStream(p as never);
+    const rec: CallRecord = { kind, ...describeRequest(p as never), textChars: 0, toolCalls: [] };
+    stats.calls.push(rec);
+    return { ...res, stream: tapCall(rec, res.stream as ReadableStream<Part>) } as StreamResult;
+  };
+  if (mode === "auto") return send("auto", params);
 
   if (mode === "none") {
-    // No tools at all: toolChoice none AND no tool definitions (the SDK already left them out via activeTools []).
-    const closed = (extra: Partial<typeof params> = {}): typeof params => ({ ...params, tools: undefined, toolChoice: { type: "none" }, ...extra });
-    const first = await doStream(closed());
+    // The provider sends no tool declarations when tools are off, so toolChoice none and activeTools [] do nothing
+    // there (found by A13, D72). What actually stops the calls: no tool-call or tool-result part left in the messages.
+    const runs = o.searches?.() ?? [];
+    const closed = (prompt: typeof params.prompt): typeof params => ({ ...params, prompt, tools: undefined, toolChoice: { type: "none" } });
+    const first = await send("closed", closed(cleanPrompt(params.prompt, runs)));
     return {
       ...first,
-      stream: closedStream(o, step, stats, first, () => doStream(closed({ prompt: [...params.prompt, noteMessage(CLOSED_NOTE)] }))),
+      // The retry is a fresh call: system prompt, the question with the dynamic block, the plain-text results, nothing else.
+      stream: closedStream(o, step, stats, first, () => send("closed-retry", closed(freshPrompt(params.prompt, runs)))),
     };
   }
 
-  const first = await doStream({ ...params, toolChoice: { type: "tool", toolName: o.toolName } });
+  const first = await send("forced", { ...params, toolChoice: { type: "tool", toolName: o.toolName } });
   const probed = await startsToolCall(first.stream);
   if (probed.called) return { ...first, stream: probed.stream };
 
@@ -346,5 +406,5 @@ async function call(
       `Do not state or guess their current values: give each the status Couldn't verify, and say once that the search could not be completed. ` +
       `Answer from the results you already have.`,
   );
-  return doStream({ ...params, toolChoice: { type: "auto" }, prompt: [...params.prompt, note] });
+  return send("forced-retry-auto", { ...params, toolChoice: { type: "auto" }, prompt: [...params.prompt, note] });
 }

@@ -40,7 +40,8 @@ import { buildContext, type BuiltContext } from "./context";
 import { friendlyError } from "./errors";
 import { detectIntent } from "./intent";
 import { createRecheckTracker } from "./recheck";
-import { createStepPolicy, NO_ANSWER_TEXT, toolChoiceEnforcement, type StepMode } from "./stepPolicy";
+import { createStepPolicy, NO_ANSWER_TEXT, toolChoiceEnforcement, type CallRecord, type StepMode } from "./stepPolicy";
+import type { SearchRun } from "./closing";
 import type { StepKind } from "./thinking";
 import { HISTORY_MAX_MESSAGES, selectHistory, toHistoryMessages } from "./history";
 import type { Models } from "./model";
@@ -152,6 +153,8 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
   const stepTimings = new Map<number, StepTiming>();
   // The model id the provider reported (an alias like "-latest" resolves to a dated id), for evals and the trace.
   let resolvedModel: string | undefined;
+  // The searches run so far as plain text, for no-tools steps (D72): queries and the tool's own escaped, wrapped output.
+  const searchRuns: SearchRun[] = [];
   const timing = (step: number): StepTiming => {
     let t = stepTimings.get(step);
     if (!t) stepTimings.set(step, (t = { step, mode: "auto", modelMs: 0, firstPartMs: null, searchMs: 0, queries: 0, toolCalls: [], textChars: 0 }));
@@ -252,6 +255,7 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
                 policy: stepPolicy,
                 toolName: "web_search",
                 owed: () => (recheck ? owedWords(recheck.state()) : undefined),
+                searches: () => searchRuns,
                 ...(models.mainThinking ? { thinking: models.mainThinking } : {}),
                 onCall: (c) => {
                   if (c.resolvedModelId) resolvedModel = c.resolvedModelId;
@@ -264,6 +268,7 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
                     toolCalls: c.stats.toolCalls,
                     ...(c.stats.droppedToolCalls.length > 0 ? { droppedToolCalls: c.stats.droppedToolCalls } : {}),
                     textChars: c.stats.textChars,
+                    calls: c.stats.calls,
                   });
                 },
               }),
@@ -277,6 +282,7 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
             search: timedSearch,
             turn: createTurnCounter(),
             emit,
+            onFormatted: (run) => searchRuns.push(run),
             onOutcome: (o) => {
               searchLog.push(...o.sources);
               searchFailed.push(...o.failed);
@@ -509,6 +515,8 @@ export interface StepTiming {
   droppedToolCalls?: string[];
   /** Characters of text the step produced. */
   textChars: number;
+  /** Every request the step made: what was sent and what came back (D72). */
+  calls?: CallRecord[];
 }
 
 function roundTiming(t: StepTiming): StepTiming {

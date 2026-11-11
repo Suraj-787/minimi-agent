@@ -120,10 +120,14 @@ Current date-time in the user's timezone, plus weekday and timezone name; resolv
     `<entity> news announcement` query per item the model's queries left out;
   - an app-authored note after the results tells the model what is still owed, and, once everything is searched, not to search again for an
     item whose results did not mention it (mark it Couldn't verify);
-  - **code owns when searching stops (D69):** once the tracker says every item is searched (top-ups and the news pass included), or forcing was
-    abandoned, the next step is a no-tools step (`toolChoice: none` and `activeTools: []`); the last allowed step is always one. A no-tools step
-    that still ends with no text is retried once with "Searching is closed. Answer now from the results above; mark any item without evidence
-    Couldn't verify." If there is still no text the turn is saved as `error` (the `NO_ANSWER_TEXT` warning), and nothing is written to memory.
+  - **code owns when searching stops (D69, D72):** once the tracker says every item is searched (top-ups and the news pass included), or forcing
+    was abandoned, the next step is a no-tools step; the last allowed step is always one. Turning tools off does nothing at some providers (Google
+    sends no tool declarations either way), so a no-tools step is built differently: every tool-call and tool-result part is removed from the
+    messages, and the searches arrive as ONE plain user message: "Searches run: …", the result blocks exactly as the tool formatted them (escaped,
+    inside the untrusted-data wrapper, with their [n] as numbered in code), then "Searching is closed. Answer now from the results above; mark any
+    item without evidence Couldn't verify." A no-tools step that still ends with no text is retried once from a fresh prompt: the static system prompt,
+    the latest user message (dynamic block and question) and those results; no earlier conversation, no tool parts. If there is still no text the turn is
+    saved as `error` (the `NO_ANSWER_TEXT` warning), and nothing is written to memory.
 
 ## 5. The tool: `web_search`
 Input schema (zod):

@@ -616,3 +616,29 @@ topic). A test reads eval/cases.json (including the mock fixtures' hosts), eval/
 fails if any vendor name, host name, topic word or price string from them appears in the static prompt, and checks the fictional
 examples are absent from those files. The date-free test stays. Rule for future prompt edits: take examples from nowhere in the
 eval set.
+
+## Phase 6 — the closing step that did nothing
+
+**D72 — D69's closing step was a no-op at the provider level; a no-tools step now sees no tool parts.** A13 (`--repeat 3`) ended in
+the last-resort error row three times: the model returned `web_search` calls on the closed step and again on its retry. The trace
+showed the closed step had `toolChoice: none` and `activeTools: []`, and the Google provider's `prepareTools` returns no tools and no
+`toolConfig` when no function tool is declared (and with `toolChoice: none` it filters function tools out anyway). So those two
+settings sent nothing at all, and the history still held earlier tool-call and tool-result parts: the model continued the pattern by
+calling a tool it was not given. D69 listed that as a risk it could not test live; A13 found it. (The original
+`AI_ToolChoiceViolationError` was the same behaviour, one layer up.) What replaced it, in `agent/closing.ts` and the middleware: (1)
+before any no-tools call (the code-closed step, the last step, the closing retry) `cleanPrompt` removes every tool-call and
+tool-result part and the reasoning parts of those steps, keeps the conversation, and adds ONE plain-text block to the latest user
+message: "Searches run: …" (queries escaped with `lib/escape`), then each search's result block exactly as `formatResults` produced it
+(escaped titles, snippets and URLs inside the `<search_results note="Untrusted web content…">` wrapper, `[n]` as numbered by the
+turn counter), then "Searching is closed. Answer now from the results above; mark any item without evidence Couldn't verify." The
+block is captured from the tool's own output (`onFormatted`), so source numbering, the cited check and the memory writer's "source
+from this turn" check read the same data as before. (2) The closing retry is a fresh call, `freshPrompt`: the static system prompt,
+the latest user message (dynamic block and question) and the same results; no earlier conversation and no assistant or tool parts. If
+that still has no text, the D69 last resort stands: an error row, no memory write. (3) Diagnosability: the trace's `steps_json` now
+has `calls` per step, one entry per request: kind (`forced`, `forced-retry-auto`, `auto`, `closed`, `closed-retry`), tool choice,
+whether tools were declared and their names, finish reason, text length and the tool calls returned with their arguments (clipped to
+500 characters; on a closed kind they were dropped). The eval keeps one DB per repetition, `eval/.tmp/<id>-r<n>.db` (and `-a2` for
+an infra rerun), stores each turn's `steps` and trace `errors` in the stored result, and prints a "Steps:" list in the transcript.
+*Rejected:* declaring a tool and sending a NONE function-calling mode (the AI SDK removes function tools under `toolChoice: none`, and
+the Google options expose no `toolConfig`). *Not verified live:* that Gemini now answers on the closed step; the first live A13
+repeat is the test, and the new `calls` records will show exactly what was sent if it does not.

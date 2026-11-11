@@ -148,6 +148,33 @@ export function renderResults(reports: CaseReport[], meta: RunMeta): string {
   return lines.join("\n");
 }
 
+interface StepView {
+  step?: number;
+  mode?: string;
+  modelMs?: number;
+  searchMs?: number;
+  finishReason?: string;
+  textChars?: number;
+  calls?: Array<{ kind?: string; toolChoice?: string; hasTools?: boolean; activeTools?: string[]; finishReason?: string; textChars?: number; toolCalls?: Array<{ name?: string; input?: string }> }>;
+}
+
+/** One line per step and per request (D72), so a failed step can be read without opening the database. */
+export function renderSteps(steps: unknown[] | undefined): string[] {
+  if (!steps || steps.length === 0) return [];
+  const out = ["Steps:"];
+  for (const raw of steps) {
+    const s = raw as StepView;
+    out.push(`- step ${(s.step ?? 0) + 1} (${s.mode ?? "?"}): model ${s.modelMs ?? "?"} ms, search ${s.searchMs ?? 0} ms, finish ${s.finishReason ?? "?"}, text ${s.textChars ?? 0} chars`);
+    for (const c of s.calls ?? []) {
+      const calls = (c.toolCalls ?? []).map((t) => `${t.name ?? "?"}(${t.input ?? ""})`).join(", ");
+      out.push(
+        `  - ${c.kind ?? "?"}: toolChoice ${c.toolChoice ?? "?"}, tools ${c.hasTools ? `[${(c.activeTools ?? []).join(", ")}]` : "none"} → finish ${c.finishReason ?? "?"}, text ${c.textChars ?? 0} chars${calls ? `, tool calls: ${calls}` : ""}`,
+      );
+    }
+  }
+  return out;
+}
+
 function checkLine(c: CheckResult): string {
   return `- ${c.pass ? "✓" : "✗"} ${c.name}${!c.pass && c.detail ? `: ${c.detail}` : ""}`;
 }
@@ -177,6 +204,8 @@ export function renderTranscript(c: EvalCase, runs: RunResult[], meta: RunMeta):
         lines.push("", "Sources returned:");
         for (const s of t.sources) lines.push(`- [${s.n}] ${s.title} — ${s.url} — ${s.publishedDate ?? "undated"}`);
       }
+      const steps = renderSteps(t.steps);
+      if (steps.length) lines.push("", ...steps);
     }
     lines.push("", "Checks:", ...r.hard.map(checkLine), ...r.soft.map((s) => checkLine({ ...s, name: `(soft) ${s.name}` })));
     lines.push("", "score" in r.judge ? `Judge: ${r.judge.score}/5 — ${r.judge.reason}` : `Judge: error (${r.judge.error})`);

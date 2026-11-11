@@ -104,8 +104,10 @@ export function createWebSearchTool(deps: {
   recheck?: RecheckTracker;
   /** Every outcome, for the trace (queries, providers, fallbacks). */
   onOutcome?: (outcome: SearchOutcome) => void;
+  /** The queries that actually ran and the formatted results, without the app note: what a no-tools step is shown (D72). */
+  onFormatted?: (run: { queries: string[]; formatted: string }) => void;
 }) {
-  const { search, turn, emit, recheck, onOutcome } = deps;
+  const { search, turn, emit, recheck, onOutcome, onFormatted } = deps;
   return tool({
     description:
       "Search the web. Use it for anything that changes (prices, versions, news, people's roles, anything current or latest), for anything you are unsure of, and for every request to verify an earlier answer. Do not use it for greetings, small talk, thanks or stable knowledge, and never because an earlier turn in the conversation searched; judge only the latest user message. Results are numbered [n]; cite them as [n].",
@@ -125,6 +127,7 @@ export function createWebSearchTool(deps: {
         // Verify mode: every result is dated against the claim it was searched for, with or without since.
         ...(recheck ? { claimFor: (r) => recheck.itemFor(r.query, r.title) } : {}),
       });
+      onFormatted?.({ queries: input.queries, formatted });
       return `${formatted}${note ? `\n${note}` : ""}`;
     },
   });

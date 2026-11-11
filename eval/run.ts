@@ -42,7 +42,7 @@ async function main(): Promise<number> {
   const deps = {
     models,
     liveSearch: (db: Parameters<typeof createSearchFromEnv>[1]) => createSearchFromEnv(e, db, realNow),
-    dbPath: (id: string) => join(TMP_DIR, `${id}.db`),
+    dbPath: (id: string, rep: number, attempt: number) => join(TMP_DIR, `${id}-r${rep}${attempt > 1 ? `-a${attempt}` : ""}.db`),
     maxSteps: e.MAX_STEPS,
   };
   const meta: RunMeta = {
@@ -56,7 +56,7 @@ async function main(): Promise<number> {
   };
 
   if (mode.cache) console.log(`\n!!! ${CACHE_BANNER} !!!\n`);
-  console.log(`${cases.length} case(s) × ${mode.repeat} run(s), ${mode.pauseMs} ms pause. Per-case DBs: eval/.tmp/<id>.db`);
+  console.log(`${cases.length} case(s) × ${mode.repeat} run(s), ${mode.pauseMs} ms pause. Per-run DBs: eval/.tmp/<id>-r<n>.db`);
 
   const ids = { provider: meta.provider, mainModel: meta.mainModel, smallModel: meta.smallModel, thinking: meta.thinking };
   let outcome;

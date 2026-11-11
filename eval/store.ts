@@ -23,6 +23,8 @@ const turn = z.object({
   ),
   firstTokenMs: z.number().nullable(),
   totalMs: z.number().nullable(),
+  steps: z.array(z.unknown()).optional(),
+  traceErrors: z.array(z.unknown()).optional(),
 });
 
 const baseRun = z.object({

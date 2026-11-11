@@ -26,8 +26,11 @@ export interface CaseDeps {
   models: Models;
   /** Real Exa/Tavily search over the case DB (its search_cache). Only used when the case has no mockSearch. */
   liveSearch: (db: Db) => Search;
-  /** Where the case's SQLite file goes; ":memory:" in tests. */
-  dbPath: (caseId: string) => string;
+  /**
+   * Where the case's SQLite file goes; ":memory:" in tests. One file per repetition (`<id>-r<n>.db`) and per
+   * attempt, so --repeat and an infra rerun never overwrite the evidence of an earlier run (D72).
+   */
+  dbPath: (caseId: string, rep: number, attempt: number) => string;
   maxSteps: number;
   /** Sleep/jitter for model retries; tests pass instant ones. */
   retry?: AgentDeps["retry"];
@@ -39,6 +42,10 @@ export interface TurnLog extends TurnObservation {
   sources: { n: number; url: string; title: string; publishedDate?: string; snippet: string }[];
   firstTokenMs: number | null;
   totalMs: number | null;
+  /** The turn's per-step trace (model/search ms, finish reasons, every request with tool choice and tool calls), D72. */
+  steps?: unknown[];
+  /** The trace's `errors` entries (forcedSearchViolation, verify checks...). */
+  traceErrors?: unknown[];
 }
 
 export type JudgeOutcome = Judgement | { error: string };
@@ -147,8 +154,8 @@ function readSeed() {
  * One repetition of one case: fresh DB → seed → forget → turns → wait for background memory writes
  * → collect output, trace and DB state → checks → judge. Throws QuotaExhausted, nothing else.
  */
-export async function runCase(deps: CaseDeps, c: EvalCase, rep: number): Promise<RunResult> {
-  const path = deps.dbPath(c.id);
+export async function runCase(deps: CaseDeps, c: EvalCase, rep: number, attempt = 1): Promise<RunResult> {
+  const path = deps.dbPath(c.id, rep, attempt);
   removeDbFiles(path);
   const db = openDb(path);
   const at = new Date(c.now);
@@ -187,6 +194,8 @@ export async function runCase(deps: CaseDeps, c: EvalCase, rep: number): Promise
         sources: search.results.map((r) => ({ n: r.n, url: r.url, title: r.title, snippet: r.snippet, ...(r.publishedDate ? { publishedDate: r.publishedDate } : {}) })),
         firstTokenMs: trace?.first_token_ms ?? null,
         totalMs: trace?.total_ms ?? null,
+        steps: parseJson<unknown[]>(trace?.steps_json, []),
+        traceErrors: parseJson<unknown[]>(trace?.errors_json, []),
       });
     }
 

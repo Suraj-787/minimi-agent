@@ -64,7 +64,7 @@ export async function runAll(o: RunAllOptions): Promise<RunOutcome> {
         if (run.infra && run.infra.length > 0) {
           o.log(`INFRA ${report.case.id} run ${rep}/${mode.repeat}: ${run.infra.join("; ")} — rerunning once`);
           if (mode.pauseMs > 0) await o.sleep(mode.pauseMs);
-          const again = await runCase(o.deps, report.case, rep);
+          const again = await runCase(o.deps, report.case, rep, 2);
           run = { ...again, firstAttempt: run };
         }
         runs.push(run);
