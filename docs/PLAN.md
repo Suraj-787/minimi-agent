@@ -109,6 +109,7 @@ forgetting a claim removes it from the next turn's recall (test); the debug draw
 - [x] Quota-safe evals (D65, D66): each finished case saved at once (transcript + stored result), `--resume`, results.md only when every case is stored; per-step model/search timing in the trace and the why? drawer; `MAIN_THINKING` / `MAIN_THINKING_ANSWER` knobs
 - [x] Eval triage (D68): judge sees recalled memory, `cited` accepts `[1, 5]` / `[1,5]` / `[1][5]`, answer-step thinking low, Flash-Lite defaults + quota notes, resolved model id recorded
 - [x] Third-run fixes (D69, D70): code closes verify-mode search and every turn ends in a model answer or an error row; A4 checker; extractor attempts; eval infra rerun
+- [x] Status wording (D71): Changed-after rule + Supabase example, Couldn't verify Now = "—", soft checks `verifyStatusContradiction` (vendor pricing page only) and `verifyNowValueOnUnverified`, A13 soft keys
 
 **Done when:** `npm run eval` (uncached, real model) finishes on the free tier and results.md is committed; `--cache` shows the
 banner and never touches results.md (test).

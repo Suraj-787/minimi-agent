@@ -12,6 +12,8 @@ export interface VerifyRow {
   status: VerifyStatus;
   /** [n] numbers in the Source cell. */
   sources: number[];
+  /** The Now value of the "Then → Now" cell (text after the arrow, or the whole cell); undefined without that column. */
+  now?: string;
 }
 
 export interface VerifyTable {
@@ -42,6 +44,13 @@ export function parseStatus(cell: string): VerifyStatus | undefined {
   return undefined;
 }
 
+/** "$19 → $25" → "$25"; "$19 → —" → "—"; no arrow → the whole cell. Emphasis and code ticks are dropped. */
+export function nowValue(cell: string): string {
+  const clean = cell.replace(/[*_`]/g, "").trim();
+  const parts = clean.split(/\s*(?:→|->|=>)\s*/);
+  return (parts[parts.length - 1] ?? "").trim();
+}
+
 /** The first table whose header has an Item and a Status column; undefined when there is none. */
 export function parseVerifyTable(answer: string): VerifyTable | undefined {
   const lines = answer.split("\n");
@@ -54,6 +63,7 @@ export function parseVerifyTable(answer: string): VerifyTable | undefined {
     const itemIdx = head.findIndex((c) => c.startsWith("item"));
     const item = itemIdx === -1 ? 0 : itemIdx;
     const source = head.findIndex((c) => c.startsWith("source"));
+    const thenNow = head.findIndex((c) => c.startsWith("then"));
 
     const rows: VerifyRow[] = [];
     let j = i + 2;
@@ -66,6 +76,7 @@ export function parseVerifyTable(answer: string): VerifyTable | undefined {
         item: (row[item] ?? "").replace(/[*_`]/g, "").trim(),
         status: parsed,
         sources: [...src.matchAll(/\[(\d{1,3})\]/g)].map((m) => Number(m[1])),
+        ...(thenNow === -1 ? {} : { now: nowValue(row[thenNow] ?? "") }),
       });
     }
     if (rows.length === 0) continue;

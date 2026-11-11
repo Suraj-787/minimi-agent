@@ -27,6 +27,7 @@ import { parseVerifyTable, takeawayGaps } from "../memory/verifyTable";
 import { writeTurnMemory } from "../memory/write";
 import { createTurnCounter, type Search, type SearchOutcome } from "../search/index";
 import {
+  nowValueOnUnverified,
   rawLinks,
   shippedProblems,
   shippedWordingProblems,
@@ -370,6 +371,9 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
     // The status must agree with the evidence label the model saw (D59). Soft: recorded, never rewritten.
     const contradictions = table ? statusContradictions(table, resultsByN) : [];
     if (contradictions.length > 0) errors.push({ verifyStatusContradiction: contradictions });
+    // A Couldn't verify row must not repeat the old value as the Now value (D71). Soft: recorded, never rewritten.
+    const nowValues = table ? nowValueOnUnverified(table) : [];
+    if (nowValues.length > 0) errors.push({ verifyNowValueOnUnverified: nowValues });
     // Soft checks (D58): style judgements the eval reports as warnings, never as failures.
     const vendorFirst = table ? vendorPageFirstProblems(table, resultsByN) : [];
     if (vendorFirst.length > 0) errors.push({ softVendorPageNotFirst: vendorFirst });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseStatus, parseVerifyTable, statusByClaim, takeawayGaps } from "../src/memory/verifyTable";
+import { nowValue, parseStatus, parseVerifyTable, statusByClaim, takeawayGaps } from "../src/memory/verifyTable";
 
 const A2 = `On 3 Nov you asked about Postgres hosting and Bun.
 
@@ -16,13 +16,15 @@ As of 12 Nov 2026: Neon's pricing differs now and Bun was already outdated when 
 describe("parseVerifyTable", () => {
   it("reads item, status and [n] sources, and the text after the table", () => {
     const t = parseVerifyTable(A2);
-    expect(t?.rows).toEqual([
+    // Item, status and sources are what the ledger reads; `now` is the Then → Now cell's Now value (D71).
+    expect(t?.rows.map(({ item, status, sources }) => ({ item, status, sources }))).toEqual([
       { item: "Neon cheapest paid plan", status: "differs", sources: [1] },
       { item: "Supabase Pro", status: "unchanged", sources: [2] },
       { item: "Render Basic-256mb", status: "unchanged", sources: [3] },
       { item: "Bun latest stable", status: "outdated", sources: [4] },
       { item: "Fly.io", status: "unverified", sources: [] },
     ]);
+    expect(t?.rows.every((r) => typeof r.now === "string")).toBe(true);
     expect(t?.after).toContain("As of 12 Nov 2026");
   });
 
@@ -85,5 +87,28 @@ None of the five tools changed pricing.`);
     const t = parseVerifyTable(A2);
     if (!t) throw new Error("table expected");
     expect(takeawayGaps(t)).toEqual(["Fly.io"]); // Couldn't verify counts too: it is not Unchanged
+  });
+});
+
+describe("Then → Now column (D71)", () => {
+  it.each([
+    ["$19/mo → $25/mo", "$25/mo"],
+    ["$19 → —", "—"],
+    ["**$19** -> **$19**", "$19"],
+    ["$19 → $19 → $29", "$29"],
+    ["—", "—"],
+    ["$19", "$19"],
+    ["", ""],
+  ])("nowValue(%s) = %s", (cell, expected) => {
+    expect(nowValue(cell)).toBe(expected);
+  });
+
+  it("each row carries its Now value; a table without the column has none", () => {
+    const t = parseVerifyTable(
+      ["| Item | Said (date) | Then → Now | Status | Evidence date | Source |", "|---|---|---|---|---|---|", "| Neon | 2026-11-03 | $19 → — | Couldn't verify | — | — |", "| Supabase | 2026-11-03 | $25 → $29 | Differs now (timing unknown) | 2026-11-11 | [1] |", "", "x"].join("\n"),
+    )!;
+    expect(t.rows.map((r) => r.now)).toEqual(["—", "$29"]);
+    const bare = parseVerifyTable(["| Item | Status |", "|---|---|", "| Neon | Unchanged |", "", "x"].join("\n"))!;
+    expect(bare.rows[0]).not.toHaveProperty("now");
   });
 });

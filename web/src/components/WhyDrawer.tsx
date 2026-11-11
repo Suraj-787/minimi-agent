@@ -20,6 +20,37 @@ const badge: Record<string, string> = {
   failed: "bg-amber-100 text-amber-800",
 };
 
+// Answer checks the app records in the trace (never rewriting the answer). Shown so a reader can see why a status
+// or value looks wrong; the key is the trace `errors` entry, the label is plain words.
+const CHECK_LABELS: Record<string, string> = {
+  verifyStatusContradiction: "Status doesn't fit the evidence",
+  verifyNowValueOnUnverified: "Couldn't verify row shows a Now value",
+  verifySourceMismatch: "Source isn't about the item",
+  shippedNotAfterSince: "Shipped-since item not dated after the since date",
+  rawLinks: "Raw link instead of [n]",
+  softVendorPageNotFirst: "Vendor page not cited first",
+  softShippedWording: "'shipped' without a vendor source",
+};
+
+function checkNotes(errors: unknown[]): { key: string; label: string; items: string[] }[] {
+  const out: { key: string; label: string; items: string[] }[] = [];
+  for (const e of errors) {
+    if (!e || typeof e !== "object") continue;
+    for (const [key, value] of Object.entries(e as Record<string, unknown>)) {
+      const label = CHECK_LABELS[key];
+      if (!label || !Array.isArray(value)) continue;
+      const items = value.map((v) => {
+        if (typeof v === "string") return v;
+        const r = (v ?? {}) as { item?: unknown; status?: unknown; reason?: unknown; now?: unknown; line?: unknown };
+        const parts = [r.item ?? r.line, r.status, r.reason === "vendor-pricing-page-only" ? "cites only the vendor's pricing page" : r.reason, r.now !== undefined ? `Now = ${String(r.now)}` : undefined];
+        return parts.filter((p) => p !== undefined && p !== "").map(String).join(" · ");
+      });
+      out.push({ key, label, items });
+    }
+  }
+  return out;
+}
+
 export function WhyDrawer({ turnId, onClose }: { turnId: string; onClose: () => void }) {
   const [info, setInfo] = useState<DebugInfo | null | undefined>(undefined);
   useEffect(() => {
@@ -35,6 +66,7 @@ export function WhyDrawer({ turnId, onClose }: { turnId: string; onClose: () => 
   const intent = info?.intent;
   const cues = [intent?.verify && "verify", intent?.news && "news", intent?.forcedSearch && "forced search"].filter(Boolean);
   const recheck = intent?.recheck;
+  const notes = checkNotes(info?.errors ?? []);
   const missing = (info?.errors ?? []).flatMap((e) =>
     e && typeof e === "object" && "verifyTakeawayMissing" in e ? [(e as { verifyTakeawayMissing: string[] }).verifyTakeawayMissing] : [],
   );
@@ -83,6 +115,18 @@ export function WhyDrawer({ turnId, onClose }: { turnId: string; onClose: () => 
               <p key={m.join()} className="text-amber-700">Takeaway skipped: {m.join(", ")}</p>
             ))}
           </Section>
+          {notes.length > 0 && (
+            <Section title="Answer checks">
+              {notes.map((n) => (
+                <div key={n.key} className="mb-1">
+                  <p className="text-amber-700">{n.label}</p>
+                  <ul className="list-disc pl-5">
+                    {n.items.map((t, i) => <li key={i}>{t}</li>)}
+                  </ul>
+                </div>
+              ))}
+            </Section>
+          )}
           <Section title="Memory recalled">
             {info.memory.turns.length + info.memory.claims.length === 0 ? (
               <p className="text-neutral-500">nothing</p>

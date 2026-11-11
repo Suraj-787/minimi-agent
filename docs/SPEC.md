@@ -177,12 +177,15 @@ The static prompt covers:
   - **Unchanged**: evidence shows the same value.
   - **Differs now (timing unknown)**: a different value with nothing dating the change. This is the status for any
     pricing/product page, whatever its date: a page date is when it was published or last crawled, not when a price changed.
-  - **Changed after DATE**: only with a dated announcement, changelog, release note or news item published after the
-    claim was said that reports the change. A page date alone never justifies it.
+  - **Changed after DATE**: only when a source's own text reports the change and that source is dated after the claim date
+    (a dated announcement, changelog, release note or news item). A vendor pricing or product page's date is the page's date,
+    not the change date, so a page date alone never justifies it (Supabase $25 → $29 from supabase.com/pricing dated 11 Nov,
+    claim dated 3 Nov → Differs now (timing unknown)).
   - **Already outdated when asked**: dated evidence labelled *before* the claim date (strictly earlier) shows a different value.
     Such a row is always this status, never Changed. Evidence labelled *same day as* the claim cannot be ordered, so a
     different value with only that is Differs now (timing unknown).
-  - **Couldn't verify**: no usable evidence, including when the only source is about another vendor.
+  - **Couldn't verify**: no usable evidence, including when the only source is about another vendor. Its Then → Now cell shows the
+    old value and "—" as Now (`$19 → —`), never the old value repeated.
   Table: `Item | Said (date) | Then → Now | Status | Evidence date | Source`, one row per item. Then a 1–2 line
   takeaway that names every row that is not Unchanged (never "nothing changed" when one isn't), with "as of". When the
   user asks what shipped: a "Shipped since <date>:" list (item, date, [n]) or "Nothing found dated after <date>."

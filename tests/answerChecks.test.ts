@@ -3,6 +3,8 @@ import {
   datesIn,
   hostIsVendor,
   isNegativeLine,
+  isVendorPricingPage,
+  nowValueOnUnverified,
   rawLinks,
   shippedProblems,
   shippedWordingProblems,
@@ -308,6 +310,70 @@ describe("D70: A4 checker fixes", () => {
         expect(sourceMentionsVendor(item, { url, title: "Pricing", snippet: "" }), item).toBe(true);
         expect(sourceMentionsVendor(item, { url: "https://example.test/other", title: "Other", snippet: "nothing relevant" }), item).toBe(false);
       }
+    });
+  });
+});
+
+describe("D71: status wording soft checks", () => {
+  const head = ["| Item | Said (date) | Then → Now | Status | Evidence date | Source |", "|---|---|---|---|---|---|"];
+  const table = (...rows: string[]) => parseVerifyTable([...head, ...rows, "", "Takeaway."].join("\n"))!;
+  const page = (url: string, title = "Page"): ResultText => ({ url, title, snippet: "" });
+
+  describe("verifyStatusContradiction: Changed after resting only on a vendor's pricing or product page", () => {
+    const row = (src: string) => table(`| Supabase Pro | 2026-11-03 | $25 → $29 | Changed after 2026-11-03 | 2026-11-11 | ${src} |`);
+    it("fires for the A13 case: only supabase.com/pricing is cited", () => {
+      const out = statusContradictions(row("Supabase Pricing [1]"), new Map([[1, page("https://supabase.com/pricing", "Supabase Pricing")]]));
+      expect(out).toEqual([{ item: "Supabase Pro", status: "changed", n: 1, reason: "vendor-pricing-page-only", url: "https://supabase.com/pricing" }]);
+    });
+    it.each(["https://supabase.com/pricing", "https://www.supabase.com/plans", "https://supabase.com/product/database", "https://supabase.com/pricing/compare"])(
+      "a vendor page at %s counts",
+      (url) => {
+        expect(isVendorPricingPage("Supabase Pro", url)).toBe(true);
+      },
+    );
+    it("does not fire when a dated announcement, a changelog or a third-party page is also cited", () => {
+      const results = new Map([
+        [1, page("https://supabase.com/pricing")],
+        [2, page("https://supabase.com/changelog", "Supabase changelog")],
+        [3, page("https://news.example.test/supabase-raises-prices")],
+      ]);
+      expect(statusContradictions(row("[1][2]"), results)).toEqual([]);
+      expect(statusContradictions(row("[1][3]"), results)).toEqual([]);
+      expect(statusContradictions(row("[2]"), results)).toEqual([]);
+    });
+    it("is not a pricing page: another vendor's /pricing, a blog post about pricing, a row that cites nothing returned", () => {
+      expect(isVendorPricingPage("Supabase Pro", "https://neon.com/pricing")).toBe(false);
+      expect(isVendorPricingPage("Supabase Pro", "https://supabase.com/blog/new-pricing")).toBe(false);
+      expect(isVendorPricingPage("Supabase Pro", "https://blog.hubspot.com/sales/hubspot-sales-hub-pricing")).toBe(false);
+      expect(statusContradictions(row("[7]"), new Map([[1, page("https://supabase.com/pricing")]]))).toEqual([]);
+    });
+    it("Differs now on the same page is the right status and is not flagged", () => {
+      const t = table("| Supabase Pro | 2026-11-03 | $25 → $29 | Differs now (timing unknown) | 2026-11-11 | [1] |");
+      expect(statusContradictions(t, new Map([[1, page("https://supabase.com/pricing")]]))).toEqual([]);
+    });
+  });
+
+  describe("verifyNowValueOnUnverified", () => {
+    it("fires when a Couldn't verify row repeats the old value (or any value) as Now, A13's Neon row", () => {
+      const t = table(
+        "| Neon | 2026-11-03 | $19/mo → $19/mo | Couldn't verify | — | [not found] |",
+        "| Render | 2026-11-03 | $6 → ? | Couldn't verify | — | — |",
+        "| Supabase | 2026-11-03 | $25 → $29 | Differs now (timing unknown) | 2026-11-11 | [1] |",
+      );
+      expect(nowValueOnUnverified(t)).toEqual([
+        { item: "Neon", now: "$19/mo" },
+        { item: "Render", now: "?" },
+      ]);
+    });
+    it("passes with — (a hyphen or en dash counts), and ignores other statuses", () => {
+      expect(nowValueOnUnverified(table("| Neon | 2026-11-03 | $19 → — | Couldn't verify | — | — |"))).toEqual([]);
+      expect(nowValueOnUnverified(table("| Neon | 2026-11-03 | $19 → – | Couldn't verify | — | — |"))).toEqual([]);
+      expect(nowValueOnUnverified(table("| Neon | 2026-11-03 | $19 → - | Couldn't verify | — | — |"))).toEqual([]);
+      expect(nowValueOnUnverified(table("| Neon | 2026-11-03 | $19 → $19 | Unchanged | 2026-11-11 | [1] |"))).toEqual([]);
+    });
+    it("a table without a Then → Now column has nothing to check", () => {
+      const t = parseVerifyTable(["| Item | Status |", "|---|---|", "| Neon | Couldn't verify |", "", "x"].join("\n"))!;
+      expect(nowValueOnUnverified(t)).toEqual([]);
     });
   });
 });

@@ -587,3 +587,32 @@ or rate limit (also mid-stream), or whose DB has a `memory_writes` row with op `
 automatically. Both attempts are kept (stored result, transcript, results.md); the rerun counts; a second infra failure is kept as it
 is, no third attempt. results.md labels the case "(rerun after provider error)" and lists both attempts under "Failures and reviews".
 I included a rate limit (429 after the middleware's retries) next to the 5xx because it is the same kind of failure.
+
+**D71 — Status wording: a pricing page's date is not the change date; Couldn't verify has no Now value.** The live A13 answer wrote
+"Changed after 2026-11-03" when the only evidence was supabase.com/pricing dated 11 Nov, and showed "$19/mo → $19/mo" next to
+"Couldn't verify". The prompt already said a page date never justifies Changed, but the model did not apply it. (1) The static
+prompt's Changed-after rule now reads: only when a source's own text reports the change and that source is dated after the claim
+date; a vendor pricing or product page's date is the page's date, not the change date, so use Differs now (timing unknown); and it
+carries the exact example: Supabase $25 → $29 from supabase.com/pricing dated 11 Nov, claim dated 3 Nov → Differs now (timing
+unknown). The example has no year, so the prompt stays free of dates (a test enforces it). (2) The Couldn't-verify rule: Then → Now
+shows the value said then and "—" as the Now value (`$19 → —`), never the old value repeated. (3) Two soft checks, recorded in the
+trace and shown in the why? drawer under "Answer checks", never rewriting the answer: `verifyStatusContradiction` now also fires
+(with `reason: "vendor-pricing-page-only"`) when a "Changed after" row cites only results that are the vendor's own pricing or
+product page (host names the vendor, path `/pricing`, `/price(s)`, `/plans`, `/product(s)`, with or without a suffix; a blog post
+whose slug merely ends in "pricing" does not count; one dated announcement, changelog or third-party page among the citations is
+enough to clear it; a row that cites nothing returned is not flagged); and the new `verifyNowValueOnUnverified` fires when a
+Couldn't-verify row's Now value (the text after the last arrow in the Then → Now cell, now parsed into `VerifyRow.now`) is anything
+but a dash (em dash, en dash or hyphen). (4) Eval: A13 lists `statusMatchesEvidenceLabel` and the new `nowValueOnUnverified` as soft
+checks and keeps `mustNotMention "Changed after"` as the hard check. *Limits:* the prompt is a request, not a guarantee, which is why
+the checks exist; a `Changed` row on a vendor page that has a path outside the list above (a docs page, a blog on the vendor's host)
+is not flagged.
+
+*Examples in the static prompt must not come from the eval set.* The first D71 example reused A13's fixture (Supabase, $25 → $29,
+supabase.com/pricing), so a pass on A13 would have proved nothing: the prompt was teaching the answer. The examples are now
+fictional and appear in no eval file: "ExampleDB Pro $10 → $12 from exampledb.com/pricing dated 11 Nov, with the claim dated 3 Nov →
+Differs now (timing unknown)"; the takeaway example is "Acme Analytics differs now: $40 → $48"; the Couldn't-verify example is
+"$30 → —"; the memory-citation example is "from your 3 Nov chat about static site tools" (it named Postgres hosting, the seed's
+topic). A test reads eval/cases.json (including the mock fixtures' hosts), eval/seed.json (entities, prices) and scripts/seed.ts and
+fails if any vendor name, host name, topic word or price string from them appears in the static prompt, and checks the fictional
+examples are absent from those files. The date-free test stays. Rule for future prompt edits: take examples from nowhere in the
+eval set.

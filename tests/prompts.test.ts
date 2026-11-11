@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { SYSTEM_PROMPT, buildDynamicBlock, withDynamicBlock } from "../src/agent/prompts";
 
@@ -29,7 +30,7 @@ describe("search discipline", () => {
     for (const status of [
       "- Unchanged:",
       "- Differs now (timing unknown):",
-      "- Changed after <date>: ONLY when a dated announcement, changelog entry, release note or news item published after the claim was said reports the change",
+      "- Changed after <date>: ONLY when a source's own text reports the change AND that source is dated after the claim date",
       '- Already outdated when asked: dated evidence labelled "before the ... claim date" (strictly earlier than the claim) shows a different value',
       "A row with such evidence is always this status, never Changed.",
       "- Couldn't verify:",
@@ -43,7 +44,7 @@ describe("search discipline", () => {
   });
 
   it("memory is cited in words by date and chat, never with bracketed ids", () => {
-    expect(SYSTEM_PROMPT).toContain('refer to it in words by date and chat, e.g. "from your 3 Nov chat about Postgres hosting"');
+    expect(SYSTEM_PROMPT).toContain('refer to it in words by date and chat, e.g. "from your 3 Nov chat about static site tools"');
     expect(SYSTEM_PROMPT).toContain('Never put ids or bracketed memory references in an answer: no "[memory: ...]", no turn or claim ids.');
   });
 
@@ -128,5 +129,54 @@ describe("source order and shipped wording (D58)", () => {
     expect(SYSTEM_PROMPT).not.toMatch(/\b20\d{2}\b/);
     expect(SYSTEM_PROMPT).not.toMatch(/\d{1,2}:\d{2}/);
   });
+
+  it("D71: a vendor pricing page's date is not the change date; the exact Supabase example is in the prompt", () => {
+    expect(SYSTEM_PROMPT).toContain("A vendor pricing or product page's date is the page's date, not the change date");
+    expect(SYSTEM_PROMPT).toContain(
+      "Example: ExampleDB Pro $10 → $12 from exampledb.com/pricing dated 11 Nov, with the claim dated 3 Nov → Differs now (timing unknown).",
+    );
+    expect(SYSTEM_PROMPT).not.toMatch(/\b20\d{2}\b/); // the example has no year: the prompt stays free of dates
+  });
+
+  it("D71: a Couldn't verify row shows — as the Now value, never the old value repeated", () => {
+    expect(SYSTEM_PROMPT).toContain(
+      `Couldn't verify: no usable evidence. In that row Then → Now shows the value said then and "—" as the Now value (for example "$30 → —"); never repeat the old value as if it were current.`,
+    );
+  });
 });
 
+// D71: examples in the static prompt must not come from the eval set, or a pass on those cases proves nothing
+// (the prompt would be teaching the answer). Everything below is read from the eval files themselves.
+describe("the static prompt shares no vendor or price with the eval set", () => {
+  const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+  const cases = JSON.parse(read("../eval/cases.json")) as { cases: Array<{ mockSearch?: Array<{ url: string }> }> };
+  const seed = JSON.parse(read("../eval/seed.json")) as { threads: Array<{ turns: Array<{ claims: Array<{ entity: string }> }> }> };
+  const everything = [read("../eval/cases.json"), read("../eval/seed.json"), read("../scripts/seed.ts")].join("\n");
+
+  const entities = seed.threads.flatMap((t) => t.turns.flatMap((u) => u.claims.map((c) => c.entity)));
+  const hosts = cases.cases.flatMap((c) => (c.mockSearch ?? []).map((m) => new URL(m.url).hostname.split(".").slice(-2)[0] ?? ""));
+  const vendors = [...new Set([...entities, ...entities.map((e) => e.split(" ")[0] ?? ""), ...hosts, "Postgres", "half-marathon"])].filter((v) => v.length >= 3);
+  const prices = [...new Set((everything.match(/\$\d[\d,]*(?:\.\d+)?/g) ?? []).map((p) => p.replace(/[.,]$/, "")))];
+
+  it("reads a real set of names and prices (the test is not vacuous)", () => {
+    expect(vendors).toEqual(expect.arrayContaining(["Neon", "Supabase", "Render", "Bun", "HubSpot", "Pipedrive", "Salesforce", "Zoho", "Freshsales"]));
+    expect(prices).toEqual(expect.arrayContaining(["$19", "$25", "$29", "$175", "$90"]));
+  });
+
+  it.each(vendors)("no vendor or topic name %s", (name) => {
+    const re = new RegExp(`(?<![\\p{L}\\p{N}])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\p{N}])`, "iu");
+    expect(SYSTEM_PROMPT).not.toMatch(re);
+  });
+
+  it("no price string from the eval files", () => {
+    const found = prices.filter((price) => new RegExp(`${price.replace(/[$.]/g, "\\$&")}(?![\\d.]*\\d)`).test(SYSTEM_PROMPT));
+    expect(found).toEqual([]);
+  });
+
+  it("the fictional examples it uses are not in the eval files either", () => {
+    for (const fake of ["ExampleDB", "exampledb.com", "Acme Analytics", "$10 → $12", "$40 → $48"]) {
+      expect(SYSTEM_PROMPT).toContain(fake);
+      expect(everything.toLowerCase()).not.toContain(fake.toLowerCase());
+    }
+  });
+});

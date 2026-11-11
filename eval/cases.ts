@@ -40,7 +40,7 @@ export const checksSchema = z
 export type Checks = z.infer<typeof checksSchema>;
 
 export const softChecksSchema = z
-  .object({ vendorPageFirst: bool, shippedWording: bool, statusMatchesEvidenceLabel: bool, noRawLinks: bool })
+  .object({ vendorPageFirst: bool, shippedWording: bool, statusMatchesEvidenceLabel: bool, noRawLinks: bool, nowValueOnUnverified: bool })
   .partial()
   .strict();
 export type SoftChecks = z.infer<typeof softChecksSchema>;

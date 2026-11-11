@@ -274,6 +274,26 @@ export function shippedWordingProblems(answer: string, results: ReadonlyMap<numb
   return out;
 }
 
+// ── soft check: a Couldn't verify row must not repeat the old value as the Now value (D71) ──
+
+export interface NowValueProblem {
+  item: string;
+  now: string;
+}
+
+const NO_VALUE = new Set(["—", "–", "-"]);
+
+/**
+ * "Couldn't verify" means there is no current value, so the Then → Now cell must end in "—". "$19/mo → $19/mo" next to
+ * Couldn't verify reads as a verified unchanged price (A13). Hyphen and en dash count as a dash. Recorded in the trace
+ * (`verifyNowValueOnUnverified`); the answer is never rewritten.
+ */
+export function nowValueOnUnverified(table: VerifyTable): NowValueProblem[] {
+  return table.rows
+    .filter((r) => r.status === "unverified" && r.now !== undefined && !NO_VALUE.has(r.now))
+    .map((r) => ({ item: r.item, now: (r.now as string).slice(0, 40) }));
+}
+
 // ── soft check: status vs the evidence label (D59) ──
 
 export interface StatusContradiction {
@@ -281,8 +301,23 @@ export interface StatusContradiction {
   /** The status as written in the table (normalised). */
   status: "differs" | "changed" | "outdated";
   n: number;
-  /** What the tool labelled that cited result. */
-  label: EvidenceLabel["side"];
+  /** What the tool labelled that cited result (label contradictions only). */
+  label?: EvidenceLabel["side"];
+  /** Set for "Changed after" resting only on the vendor's own pricing or product page (D71). */
+  reason?: "vendor-pricing-page-only";
+  url?: string;
+}
+
+/** A vendor's own pricing / plans / product page: its date is the page's date, never the date a change was announced. */
+const PRICING_PATH = /\/(?:pricing|prices?|plans?|products?)(?:[/?#.-]|$)/i;
+
+export function isVendorPricingPage(item: string, url: string): boolean {
+  if (!hostIsVendor(item, url)) return false;
+  try {
+    return PRICING_PATH.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -296,6 +331,16 @@ export function statusContradictions(table: VerifyTable, results: ReadonlyMap<nu
   const out: StatusContradiction[] = [];
   for (const row of table.rows) {
     if (row.status !== "differs" && row.status !== "changed" && row.status !== "outdated") continue;
+    // "Changed after" needs a source whose own text reports the change; a vendor pricing page only shows the value now (D71).
+    if (row.status === "changed") {
+      const cited = row.sources.flatMap((n) => {
+        const r = results.get(n);
+        return r ? [{ n, r }] : [];
+      });
+      if (cited.length > 0 && cited.every(({ r }) => isVendorPricingPage(row.item, r.url))) {
+        out.push({ item: row.item, status: "changed", n: cited[0]!.n, reason: "vendor-pricing-page-only", url: cited[0]!.r.url });
+      }
+    }
     const vendor = norm(row.item).trim().split(" ")[0];
     for (const n of row.sources) {
       const label = results.get(n)?.label;

@@ -150,6 +150,7 @@ export function runChecks(c: EvalCase, o: Observed): { hard: CheckResult[]; soft
   const soft: CheckResult[] = [];
   if (s.vendorPageFirst) soft.push(noTraceError("vendorPageFirst", "softVendorPageNotFirst", o));
   if (s.noRawLinks) soft.push(noTraceError("noRawLinks", "rawLinks", o));
+  if (s.nowValueOnUnverified) soft.push(noTraceError("nowValueOnUnverified", "verifyNowValueOnUnverified", o));
   if (s.shippedWording) soft.push(noTraceError("shippedWording", "softShippedWording", o));
   if (s.statusMatchesEvidenceLabel) soft.push(noTraceError("statusMatchesEvidenceLabel", "verifyStatusContradiction", o));
   return { hard, soft };

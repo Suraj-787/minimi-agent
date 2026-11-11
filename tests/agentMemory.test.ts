@@ -185,7 +185,7 @@ describe("memory write path, end to end (mocked models and search)", () => {
       "| Item | Said (date) | Then → Now | Status | Evidence date | Source |",
       "|---|---|---|---|---|---|",
       "| Neon cheapest paid plan | 2026-11-03 | $19 → pay-as-you-go | Differs now (timing unknown) | 2026-11-04 | [1] |",
-      "| Supabase Pro | 2026-11-03 | $25 → ? | Couldn't verify | — | — |",
+      "| Supabase Pro | 2026-11-03 | $25 → — | Couldn't verify | — | — |",
       "| Render Basic-256mb | 2026-11-03 | $6 → $6 | Unchanged | 2026-11-10 | [2] |",
       "| Bun latest stable | 2026-11-03 | 1.3 → 1.2.21 | Already outdated when asked | 2026-08-20 | [3] |",
       "",
@@ -451,7 +451,12 @@ describe("verifyStatusContradiction reaches the trace (D59)", () => {
   it("consistent statuses record nothing", async () => {
     expect((await run("2026-11-01", "Already outdated when asked")).some((e) => "verifyStatusContradiction" in e)).toBe(false);
     expect((await run("2026-11-03", "Differs now (timing unknown)")).some((e) => "verifyStatusContradiction" in e)).toBe(false);
-    expect((await run("2026-11-10", "Changed after 2026-11-10")).some((e) => "verifyStatusContradiction" in e)).toBe(false);
+  });
+
+  it("'Changed after' resting only on the vendor's pricing page is recorded even when the date fits (D71)", async () => {
+    expect(await run("2026-11-10", "Changed after 2026-11-10")).toContainEqual({
+      verifyStatusContradiction: [{ item: "Supabase Pro", status: "changed", n: 1, reason: "vendor-pricing-page-only", url: "https://supabase.com/pricing" }],
+    });
   });
 });
 
