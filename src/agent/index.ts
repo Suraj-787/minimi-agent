@@ -39,7 +39,7 @@ import { buildContext, type BuiltContext } from "./context";
 import { friendlyError } from "./errors";
 import { detectIntent } from "./intent";
 import { createRecheckTracker } from "./recheck";
-import { createStepPolicy, toolChoiceEnforcement, type StepMode } from "./stepPolicy";
+import { createStepPolicy, NO_ANSWER_TEXT, toolChoiceEnforcement, type StepMode } from "./stepPolicy";
 import type { StepKind } from "./thinking";
 import { HISTORY_MAX_MESSAGES, selectHistory, toHistoryMessages } from "./history";
 import type { Models } from "./model";
@@ -153,7 +153,7 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
   let resolvedModel: string | undefined;
   const timing = (step: number): StepTiming => {
     let t = stepTimings.get(step);
-    if (!t) stepTimings.set(step, (t = { step, mode: "auto", modelMs: 0, firstPartMs: null, searchMs: 0, queries: 0 }));
+    if (!t) stepTimings.set(step, (t = { step, mode: "auto", modelMs: 0, firstPartMs: null, searchMs: 0, queries: 0, toolCalls: [], textChars: 0 }));
     return t;
   };
   const timedSearch: Search = {
@@ -254,7 +254,16 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
                 ...(models.mainThinking ? { thinking: models.mainThinking } : {}),
                 onCall: (c) => {
                   if (c.resolvedModelId) resolvedModel = c.resolvedModelId;
-                  Object.assign(timing(c.step), { mode: c.mode, modelMs: c.modelMs, firstPartMs: c.firstPartMs, ...(c.thinking ? { thinking: c.thinking } : {}) });
+                  Object.assign(timing(c.step), {
+                    mode: c.mode,
+                    modelMs: c.modelMs,
+                    firstPartMs: c.firstPartMs,
+                    ...(c.thinking ? { thinking: c.thinking } : {}),
+                    ...(c.stats.finishReason ? { finishReason: c.stats.finishReason } : {}),
+                    toolCalls: c.stats.toolCalls,
+                    ...(c.stats.droppedToolCalls.length > 0 ? { droppedToolCalls: c.stats.droppedToolCalls } : {}),
+                    textChars: c.stats.textChars,
+                  });
                 },
               }),
             });
@@ -288,8 +297,14 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
         // search, and so must later ones while an item is unsearched or the news pass is owed, up to a cap and
         // only until a forced step is ignored. The choice itself is applied in toolChoiceEnforcement, not by the SDK.
         prepareStep: ({ stepNumber }) => {
-          stepPolicy.plan(stepNumber, !!recheck && (stepNumber === 0 || recheck.needsSearch()));
-          return {};
+          // Code owns when verify-mode searching stops (D69): once every recalled item has been searched (top-ups
+          // and the news pass included), or forcing was abandoned, the next step is a no-tools step.
+          const needs = recheck?.needsSearch() ?? false;
+          const mode = stepPolicy.plan(stepNumber, {
+            wantForce: !!recheck && (stepNumber === 0 || needs),
+            close: !!recheck && stepNumber >= 1 && (!needs || stepPolicy.abandoned()),
+          });
+          return mode === "none" ? { activeTools: [] } : {};
         },
         // The SDK's own retries are silent, so they are off here; retryMiddleware retries with a visible status.
         maxRetries: 0,
@@ -331,6 +346,10 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
           writeAssistant(text ? `${text}\n\n${note}` : note, "error", null);
         } else if (isAborted || isCancelled || outcome.status === "aborted") {
           writeAssistant(text, "partial", JSON.stringify(responseMessage.parts), responseMessage.parts);
+        } else if (text.trim() === "") {
+          // Last resort (D69): even the no-tools retry produced no text. An error row, shown like a provider error,
+          // never a "complete" answer: it must not reach memory (writeMemory only runs for complete turns).
+          writeAssistant(`⚠️ ${NO_ANSWER_TEXT}`, "error", null);
         } else {
           writeAssistant(text, "complete", JSON.stringify(responseMessage.parts), responseMessage.parts);
         }
@@ -478,6 +497,14 @@ export interface StepTiming {
   firstPartMs: number | null;
   searchMs: number;
   queries: number;
+  /** Provider finish reason for the step ("stop", "tool-calls", ...). */
+  finishReason?: string;
+  /** Names of the tool calls the model made (and the app ran). */
+  toolCalls: string[];
+  /** Tool calls on a no-tools step, dropped and never run. */
+  droppedToolCalls?: string[];
+  /** Characters of text the step produced. */
+  textChars: number;
 }
 
 function roundTiming(t: StepTiming): StepTiming {

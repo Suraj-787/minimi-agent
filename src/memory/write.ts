@@ -6,7 +6,7 @@ import { isoDayFromMs } from "../lib/clock";
 import { errorFields, log } from "../lib/log";
 import { localDate } from "../lib/tz";
 import { sourceMentionsVendor, type ResultText } from "../agent/answerChecks";
-import { extractTurnMemory, type Extraction } from "./extract";
+import { ExtractError, extractTurnMemory, type ExtractOptions, type Extraction } from "./extract";
 import { claimKey, normalizeKeyPart } from "./claimKey";
 import { reconcileClaims, touchVerified, type ReconcileOp, type ValidClaim } from "./reconcile";
 import { scanText } from "./scan";
@@ -23,7 +23,10 @@ export interface MemoryWriterDeps {
   /** The small model (SPEC §7.1). */
   model: LanguageModel;
   now: () => Date;
+  /** Per extraction attempt (D70); up to 3 attempts. */
   timeoutMs?: number;
+  /** Extra extraction options (attempts, total cap, sleep): tests. */
+  extract?: ExtractOptions;
 }
 
 export interface TurnMemoryInput {
@@ -108,7 +111,18 @@ export async function writeTurnMemory(deps: MemoryWriterDeps, input: TurnMemoryI
   const { db, now } = deps;
   const result: WriteResult = { summaryStored: false, ops: [], rejected: [], tableStatuses: 0 };
   const logError = (stage: string, err: unknown): void => {
-    const fields = errorFields(err);
+    // An extraction failure says how long it tried and what the provider said (status, retry-after), so a slow reply
+    // can be told from a rate limit (D70). Never the message body: it can carry request details.
+    const fields =
+      err instanceof ExtractError
+        ? {
+            error: err.causeName,
+            attempts: err.attempts,
+            elapsedMs: err.elapsedMs,
+            ...(err.status !== undefined ? { status: err.status } : {}),
+            ...(err.retryAfterMs !== undefined ? { retryAfterMs: err.retryAfterMs } : {}),
+          }
+        : errorFields(err);
     log.error("memory write failed", { turnId: input.turnId, stage, ...fields });
     result.error = stage;
     try {
@@ -132,7 +146,7 @@ export async function writeTurnMemory(deps: MemoryWriterDeps, input: TurnMemoryI
         knownClaims: input.knownClaims,
         today,
       },
-      deps.timeoutMs === undefined ? {} : { timeoutMs: deps.timeoutMs },
+      { ...(deps.timeoutMs === undefined ? {} : { attemptTimeoutMs: deps.timeoutMs }), ...deps.extract },
     );
   } catch (err) {
     logError("extract", err);

@@ -1,4 +1,5 @@
 import { generateText, Output, type LanguageModel } from "ai";
+import { apiErrorOf, backoffMs, classify, retryDelayHintMs } from "../lib/retry";
 import { z } from "zod";
 
 // The schema the model sees is deliberately loose (plain strings, nullable, no length or regex limits):
@@ -78,20 +79,86 @@ export function buildExtractPrompt(input: ExtractInput): string {
   ].join("\n\n");
 }
 
-/** One background structured call (SPEC §7.1). Throws on model or schema failure; write.ts logs it. */
-export async function extractTurnMemory(
-  model: LanguageModel,
-  input: ExtractInput,
-  opts: { timeoutMs?: number } = {},
-): Promise<Extraction> {
-  const result = await generateText({
-    model,
-    instructions: EXTRACT_INSTRUCTIONS,
-    prompt: buildExtractPrompt(input),
-    output: Output.object({ schema: extractionSchema, name: "turn_memory" }),
-    // Off the critical path, so the SDK's own backoff is fine here; one signal caps all attempts together.
-    maxRetries: 2,
-    abortSignal: AbortSignal.timeout(opts.timeoutMs ?? 30_000),
+export interface ExtractOptions {
+  /** Per attempt (default 30 s). */
+  attemptTimeoutMs?: number;
+  /** Default 3. */
+  maxAttempts?: number;
+  /** All attempts together (default attempts x attemptTimeoutMs, about 90 s). */
+  totalMs?: number;
+  /** Waits between attempts; tests inject an instant one. */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  rand?: () => number;
+}
+
+/** A failed extraction with what the memory_writes error row needs to tell a slow reply from a rate limit (D70). */
+export class ExtractError extends Error {
+  constructor(
+    readonly attempts: number,
+    readonly elapsedMs: number,
+    /** Class name of the last failure ("TimeoutError", "AI_APICallError"...). */
+    readonly causeName: string,
+    readonly status?: number,
+    readonly retryAfterMs?: number,
+  ) {
+    super(`memory extraction failed after ${attempts} attempt(s)`);
+    this.name = "ExtractError";
+  }
+}
+
+const sleepFor = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => (clearTimeout(t), resolve()), { once: true });
   });
-  return result.output;
+
+/**
+ * One background structured call (SPEC §7.1). Up to 3 attempts, each with its own 30 s timeout, inside a total cap
+ * of about 90 s (D70). Before, one 30 s signal covered the SDK's own retries too, so a rate-limit wait or one slow
+ * reply used the whole budget and the turn's claims were lost. A timeout, a 429 (not a daily quota), a 5xx or a
+ * network error is retried; a schema failure or a daily quota is not. Throws ExtractError; write.ts logs it.
+ */
+export async function extractTurnMemory(model: LanguageModel, input: ExtractInput, opts: ExtractOptions = {}): Promise<Extraction> {
+  const attemptMs = opts.attemptTimeoutMs ?? 30_000;
+  const maxAttempts = opts.maxAttempts ?? 3;
+  const sleep = opts.sleep ?? sleepFor;
+  const rand = opts.rand ?? Math.random;
+  const started = performance.now();
+  const overall = AbortSignal.timeout(opts.totalMs ?? attemptMs * maxAttempts);
+  const prompt = buildExtractPrompt(input);
+
+  let attempts = 0;
+  let last: unknown;
+  while (attempts < maxAttempts) {
+    attempts++;
+    const attemptSignal = AbortSignal.timeout(attemptMs);
+    try {
+      const result = await generateText({
+        model,
+        instructions: EXTRACT_INSTRUCTIONS,
+        prompt,
+        output: Output.object({ schema: extractionSchema, name: "turn_memory" }),
+        // The SDK's silent retries are off: this loop owns them, so each attempt has its own timeout and is counted.
+        maxRetries: 0,
+        abortSignal: AbortSignal.any([overall, attemptSignal]),
+      });
+      return result.output;
+    } catch (err) {
+      last = err;
+      const timedOut = attemptSignal.aborted && !overall.aborted;
+      const verdict = timedOut ? ({ kind: "retry" } as const) : classify(err);
+      if (overall.aborted || verdict.kind !== "retry" || attempts >= maxAttempts) break;
+      const delay = backoffMs(attempts, retryDelayHintMs(err), rand);
+      if (performance.now() - started + delay >= (opts.totalMs ?? attemptMs * maxAttempts)) break;
+      await sleep(delay, overall);
+    }
+  }
+  const api = apiErrorOf(last);
+  throw new ExtractError(
+    attempts,
+    Math.round(performance.now() - started),
+    last instanceof Error ? last.name : typeof last,
+    api?.statusCode,
+    retryDelayHintMs(last),
+  );
 }

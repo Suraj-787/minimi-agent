@@ -3,8 +3,44 @@
 
 import type { VerifyTable } from "../memory/verifyTable";
 
-const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 const pad = (n: number): string => String(n).padStart(2, "0");
+
+// Month names are listed explicitly (D70). A generic "any word" pattern let a word before the date ("reported
+// 10 November", "after 9 November") match as "<word> <day>", swallow the day number and hide the real date.
+const MONTH_NAMES: Array<[number, string[]]> = [
+  [1, ["january", "jan"]],
+  [2, ["february", "feb"]],
+  [3, ["march", "mar"]],
+  [4, ["april", "apr"]],
+  [5, ["may"]],
+  [6, ["june", "jun"]],
+  [7, ["july", "jul"]],
+  [8, ["august", "aug"]],
+  [9, ["september", "sept", "sep"]],
+  [10, ["october", "oct"]],
+  [11, ["november", "nov"]],
+  [12, ["december", "dec"]],
+];
+const MONTH_NUMBER = new Map(MONTH_NAMES.flatMap(([n, names]) => names.map((name) => [name, n] as const)));
+// Longest names first, so "sept" is not read as "sep" + "t".
+const MONTH_RE = [...MONTH_NUMBER.keys()].sort((a, b) => b.length - a.length).join("|");
+const DAY = String.raw`(\d{1,2})(?!\d)(?:st|nd|rd|th)?`;
+const YEAR = String.raw`(?:,?\s+(\d{4})(?!\d))?`;
+const DAY_FIRST = String.raw`\b${DAY}\s+(?:of\s+)?(${MONTH_RE})\b\.?${YEAR}`;
+const MONTH_FIRST = String.raw`\b(${MONTH_RE})\b\.?\s+${DAY}${YEAR}`;
+
+/** Every calendar date written in `line`, as YYYY-MM-DD. `fallbackYear` fills "Nov 12" with no year. */
+export function datesIn(line: string, fallbackYear: number): string[] {
+  const out: string[] = [];
+  for (const m of line.matchAll(/\b(\d{4})-(\d{2})-(\d{2})\b/g)) out.push(m[0]);
+  for (const m of line.matchAll(new RegExp(`${DAY_FIRST}|${MONTH_FIRST}`, "gi"))) {
+    const month = MONTH_NUMBER.get((m[2] ?? m[4] ?? "").toLowerCase());
+    const day = Number(m[1] ?? m[5]);
+    if (!month || !(day >= 1 && day <= 31)) continue;
+    out.push(`${m[3] ?? m[6] ?? fallbackYear}-${pad(month)}-${pad(day)}`);
+  }
+  return out;
+}
 
 /** Markdown links `[text](url)` and bare URLs: answers cite with [n] only (D50). */
 export function rawLinks(answer: string): string[] {
@@ -16,19 +52,16 @@ export function rawLinks(answer: string): string[] {
   return out;
 }
 
-/** Every calendar date written in `line`, as YYYY-MM-DD. `fallbackYear` fills "Nov 12" with no year. */
-export function datesIn(line: string, fallbackYear: number): string[] {
-  const out: string[] = [];
-  for (const m of line.matchAll(/\b(\d{4})-(\d{2})-(\d{2})\b/g)) out.push(m[0]);
-  const named = /\b(?:(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})\.?(?:,?\s+(\d{4}))?|([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?)\b/g;
-  for (const m of line.matchAll(named)) {
-    const monthWord = (m[2] ?? m[4] ?? "").toLowerCase().slice(0, 3);
-    const mi = MONTHS.indexOf(monthWord);
-    const day = Number(m[1] ?? m[5]);
-    if (mi < 0 || !(day >= 1 && day <= 31)) continue;
-    out.push(`${m[3] ?? m[6] ?? fallbackYear}-${pad(mi + 1)}-${pad(day)}`);
-  }
-  return out;
+/**
+ * "Nothing found dated after …", and per-vendor forms like "- Pipedrive: No major feature shipments found dated after
+ * 9 November" (D70): a statement that nothing shipped is not an item, so it needs no date after the since date.
+ */
+export function isNegativeLine(line: string): boolean {
+  const text = line
+    .trim()
+    .replace(/^(?:[-*•]|\d+[.)])\s*/, "") // bullet
+    .replace(/^[^:—–]{1,60}?(?::|\s[—–-]\s)\s*/, ""); // "Pipedrive:" or "Zoho CRM — " label
+  return /\bnothing found\b/i.test(line) || /^(?:no|none|nothing)\b[^.]*\b(?:found|shipped|launched|released|announced|reported|seen)\b/i.test(text);
 }
 
 export interface ShippedProblem {
@@ -59,7 +92,7 @@ export function shippedProblems(answer: string, expectedSince?: string): Shipped
       break;
     }
     if (/^#{1,6}\s/.test(line) || /^\|/.test(line)) break;
-    if (/nothing found/i.test(line)) continue;
+    if (isNegativeLine(line)) continue;
     const dates = datesIn(line, Number(since.slice(0, 4)));
     if (dates.length === 0) problems.push({ line: line.slice(0, 120), reason: "undated" });
     else if (dates.every((d) => d <= since)) problems.push({ line: line.slice(0, 120), reason: "not-after-since" });
@@ -100,6 +133,31 @@ const COMMON_WORD_VENDORS = new Set(["render", "neon", "bun", "linear", "notion"
 const SHORT_VENDOR = 4;
 
 /**
+ * Product name -> the company name its own pages use (D70). "Freshsales" is sold by Freshworks, so its pricing page is
+ * freshworks.com and never says "freshsales" in the URL or title. Keyed by the item's first word, lowercase.
+ * Covers the CRM tools and hosts in the demo seed; other products fall back to the plain name.
+ */
+export const VENDOR_ALIASES: Record<string, string[]> = {
+  freshsales: ["freshworks"],
+  hubspot: ["hubspot"],
+  pipedrive: ["pipedrive"],
+  salesforce: ["salesforce"],
+  zoho: ["zoho"],
+  neon: ["neon"],
+  supabase: ["supabase"],
+  render: ["render"],
+  bun: ["bun"],
+  node: ["nodejs"],
+};
+
+/** The words that count as naming the item's vendor: its first word, first+second joined, and its aliases. */
+function vendorForms(words: string[]): string[] {
+  const first = words[0];
+  if (!first) return [];
+  return [first, ...(words[1] ? [`${first}${words[1]}`] : []), ...(VENDOR_ALIASES[first] ?? [])];
+}
+
+/**
  * Does this result talk about the item's vendor? Whole word, case-insensitive ("Bun" never matches "bundle").
  * The vendor is the item's first word, also tried joined with the second so "Node.js" finds nodejs.org.
  * Short or common-word vendors must appear in the URL or title; others may appear anywhere in the text (D57).
@@ -108,7 +166,7 @@ export function sourceMentionsVendor(item: string, r: ResultText): boolean {
   const words = norm(item).trim().split(" ").filter(Boolean);
   const first = words[0];
   if (!first) return true; // nothing to check against
-  const forms = [first, ...(words[1] ? [`${first}${words[1]}`] : [])];
+  const forms = vendorForms(words);
   const strict = first.length <= SHORT_VENDOR || COMMON_WORD_VENDORS.has(first);
   const text = ` ${norm(strict ? `${r.url} ${r.title}` : `${r.url} ${r.title} ${r.snippet}`)} `;
   return forms.some((f) => text.includes(` ${f} `));
@@ -148,7 +206,7 @@ export function hostIsVendor(item: string, url: string): boolean {
   const words = norm(item).trim().split(" ").filter(Boolean);
   const first = words[0];
   if (!first) return false;
-  const forms = [first, ...(words[1] ? [`${first}${words[1]}`] : [])];
+  const forms = vendorForms(words);
   const host = ` ${norm(hostOf(url))} `;
   return forms.some((f) => host.includes(` ${f} `));
 }

@@ -118,7 +118,12 @@ Current date-time in the user's timezone, plus weekday and timezone name; resolv
   - when the message has a news cue (shipped / launch / release / news / update), one more forced call runs as the
     news pass: `since` = the resolved since date (else the earliest day a listed claim was said), no `domains`, one
     `<entity> news announcement` query per item the model's queries left out;
-  - an app-authored note after the results tells the model what is still owed. Then steps are `auto`; the last is `none`.
+  - an app-authored note after the results tells the model what is still owed, and, once everything is searched, not to search again for an
+    item whose results did not mention it (mark it Couldn't verify);
+  - **code owns when searching stops (D69):** once the tracker says every item is searched (top-ups and the news pass included), or forcing was
+    abandoned, the next step is a no-tools step (`toolChoice: none` and `activeTools: []`); the last allowed step is always one. A no-tools step
+    that still ends with no text is retried once with "Searching is closed. Answer now from the results above; mark any item without evidence
+    Couldn't verify." If there is still no text the turn is saved as `error` (the `NO_ANSWER_TEXT` warning), and nothing is written to memory.
 
 ## 5. The tool: `web_search`
 Input schema (zod):
@@ -210,7 +215,8 @@ columns) and maps each recalled claim to the row naming its entity (best attribu
 - **Couldn't verify** → no write for that claim.
 - **Differs now / Changed after / Already outdated** → the extractor's new value goes through reconcile as usual.
 - No parseable table, or no row naming a claim → the ordinary path for that claim.
-Retries: the SDK's own (`maxRetries: 2`), with one 30 s abort signal capping all attempts together.
+Retries (D70): up to 3 attempts, each with its own 30 s timeout, total cap about 90 s (a timeout, a 429 that is not a daily quota, a 5xx or a
+network error is retried; a schema failure is not). A failure's `memory_writes` row records attempts, elapsed ms, status and retry-after.
 
 ### 7.2 Claims are dated (bi-temporal-lite)
 `claims` columns: `id, key, entity, attribute, value, source_url, turn_id, thread_id,

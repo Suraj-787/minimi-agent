@@ -79,16 +79,18 @@ export function createRecheckTracker(input: { items: readonly RecheckItem[]; new
     },
     note() {
       const left = uncovered();
+      const stop = "Don't search again for an item whose results didn't mention it; mark it Couldn't verify.";
       if (left.length > 0) {
-        return `App note: not searched yet: ${left.map((i) => i.entity).join(", ")}. Search them in your next web_search call before answering.`;
+        return `App note: not searched yet: ${left.map((i) => i.entity).join(", ")}. Search them in your next web_search call before answering. ${stop}`;
       }
       if (!newsDone && newsSince) {
-        return `App note: next, search for launches, releases and pricing announcements since ${newsSince}: one query per item, with since and no domains.`;
+        return `App note: next, search for launches, releases and pricing announcements since ${newsSince}: one query per item, with since and no domains. ${stop}`;
       }
       if (lastWasNews) {
-        return `App note: these results were filtered to pages published on or after ${newsSince}. Only a dated announcement, changelog or news item here can show a change after that date. After the table, add "Shipped since ${newsSince}:" listing each launch with its date and [n], or "Nothing found dated after ${newsSince}."`;
+        return `App note: these results were filtered to pages published on or after ${newsSince}. Only a dated announcement, changelog or news item here can show a change after that date. After the table, add "Shipped since ${newsSince}:" listing each launch with its date and [n], or "Nothing found dated after ${newsSince}." ${stop}`;
       }
-      return undefined;
+      // Every item is searched (and the news pass, if owed, is done): searching is over, code closes the next step.
+      return `App note: every item has been searched. ${stop} Write the answer now.`;
     },
     needsSearch: () => uncovered().length > 0 || !newsDone,
     itemFor(query, title) {

@@ -169,16 +169,19 @@ describe("runAgent with web_search", () => {
     expect(listMessages(db, TID).at(-1)?.text).toBe("I'm good!");
   });
 
-  it("stops at maxSteps and forces the last step to answer in text", async () => {
+  it("stops at maxSteps: the last step has no tools; a model that still calls one gets one closing retry, then an error row", async () => {
     const calls: unknown[] = [];
     const model = scriptedModel([{ toolCall: { name: "web_search", input: { queries: ["again"] } } }]);
     const run = await runAgent({ ...deps(model), search: searchOf(calls), maxSteps: 3 }, input("loop forever"));
     await readAll(run.stream);
     await run.done;
-    expect(model.doStreamCalls).toHaveLength(3);
-    expect(calls).toHaveLength(2); // steps 1 and 2 search; step 3 is not allowed to
+    expect(model.doStreamCalls).toHaveLength(4); // steps 1-3, plus the one retry of the no-tools step (D69)
+    expect(calls).toHaveLength(2); // steps 1 and 2 search; the dropped calls on step 3 never run
     expect(model.doStreamCalls[2]?.toolChoice).toEqual({ type: "none" });
+    expect(model.doStreamCalls[2]?.tools ?? []).toEqual([]);
     expect(model.doStreamCalls[0]?.toolChoice).not.toEqual({ type: "none" });
+    // No text at all: an error row (not "complete"), so it is never written to memory.
+    expect(listMessages(db, TID).at(-1)?.status).toBe("error");
   });
 
   it("a search outage becomes tool output the model can caveat, not a failed turn", async () => {

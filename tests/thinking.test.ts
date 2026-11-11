@@ -103,7 +103,8 @@ describe("per-step thinking and timing in a real turn", () => {
     expect(steps[0]).toMatchObject({ step: 0, mode: "force", thinking: "tool" });
     expect(steps[0]?.queries as number).toBeGreaterThanOrEqual(1); // the tracker may top up the model's queries
     expect(steps[0]?.searchMs as number).toBeGreaterThanOrEqual(25); // the 30 ms search is counted in step 0, not the model
-    expect(steps[1]).toMatchObject({ step: 1, mode: "auto", thinking: "answer", searchMs: 0, queries: 0 });
+    // every item was searched in step 0, so code closed step 1: a no-tools answer step (D69)
+    expect(steps[1]).toMatchObject({ step: 1, mode: "none", thinking: "answer", searchMs: 0, queries: 0 });
     expect(steps[1]?.firstPartMs).not.toBeNull();
   });
 

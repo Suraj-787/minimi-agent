@@ -43,7 +43,7 @@ describe("runCase", () => {
   it("A13: waits for the background write, so the supersede chain is visible to claimState", async () => {
     const main = scriptedModel([
       { toolCall: { name: "web_search", input: { queries: ["Supabase pricing Pro plan"], fresh: true, domains: ["supabase.com"] } } },
-      { text: `${TABLE_ROW}| Supabase Pro | 2026-11-03 | $25 → $29/month | Differs now (timing unknown) | 2026-11-11 | [1] |\n\nSupabase moved from $25 to $29/month as of 12 Nov 2026 [1].` },
+      { text: `${TABLE_ROW}| Supabase Pro | 2026-11-03 | $25 → $29/month | Differs now (timing unknown) | 2026-11-11 | [1] |\n| Neon | 2026-11-03 | $19 → ? | Couldn't verify | – | – |\n| Render | 2026-11-03 | $6 → ? | Couldn't verify | – | – |\n\nSupabase moved from $25 to $29/month as of 12 Nov 2026 [1]; Neon and Render are Couldn't verify (no evidence found).` },
       { text: "On 3 Nov you asked about Postgres hosting and Bun." },
     ]);
     const small = smallModel({

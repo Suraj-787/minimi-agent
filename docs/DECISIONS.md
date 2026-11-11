@@ -548,3 +548,42 @@ time per forced search step (D65 had left it at the provider default). (4) `.env
 (what an alias like `-latest` resolved to) is kept: per step in the trace (`usage.resolvedModel`), per run in the stored result, and
 shown in results.md and the transcripts as `requested → resolved` for both the main model and the judge. Providers that do not
 report one show just the requested id.
+
+## Phase 6 — after the third eval run
+
+**D69 — Code owns when verify-mode searching stops, and a turn always ends in a model-written answer or an honest error.** A13, A14,
+A17 and A19 ended with the canned sentence: the model kept searching on the steps that were not forced (the fixture had one vendor's
+page, so it hunted for the others), and the last step, even on `toolChoice: none`, returned another tool call. D63 had only made that
+a fixed "complete" answer. Now: (a) `prepareStep` closes search as soon as `recheck.needsSearch()` is false from step 1 on (every
+recalled item searched, top-ups and the news pass included) or forcing was abandoned: the step gets `activeTools: []` (supported by
+ai@7's `PrepareStepResult`) and the middleware sends `toolChoice: none` with no tool definitions; the last allowed step is always
+such a step and `maxSteps` stays the backstop. Non-verify turns are unchanged (auto until the last step). (b) A no-tools step that
+ends with no text (a dropped tool call, or empty) is retried once, live-streamed and not buffered, with "Searching is closed. Answer
+now from the results above; mark any item without evidence Couldn't verify." (c) If there is still no text, `runAgent` saves the
+turn as `error` with `⚠️ NO_ANSWER_TEXT` (the same shape as the provider-error path); memory extraction and ledger writes only run
+for `complete` turns, so none happens. The middleware no longer injects text. (d) `recheck.note()` adds "Don't search again for an
+item whose results didn't mention it; mark it Couldn't verify", and, once everything is searched, tells the model to write the
+answer. (e) `steps_json` now also has `finishReason`, `toolCalls`, `droppedToolCalls` and `textChars` per step, so a no-answer step
+can be read off the trace. (f) Fixtures: A14, A17 and A19 carry an unchanged-price page for the vendors the question is not about;
+A13 keeps its single Supabase page on purpose and now also requires "Couldn't verify" (the missing vendors), so it regression-tests
+"evidence gap, still answers". *Risk:* the history still holds the earlier tool calls while no tools are defined; some providers
+reject that. It is untested against the live API (no live calls were made); if a provider returns a 400 on a closed step, the fix
+is to keep one tool definition and rely on `toolChoice: none` plus the drop-and-retry path.
+
+**D70 — A4 checker fixes, extractor attempts, eval reruns.** *Checker:* `datesIn` used `[A-Za-z]{3,9}` for the month, so "reported 10
+November 2026" and "dated after 9 November 2026" matched as "reported 10" / "after 9", consumed the day and found no date, and every
+line of A4's valid "Shipped since" list was flagged "undated". It now has an explicit month-name list (long and abbreviated, `sept`
+before `sep`), day-first and month-first forms, and a day cannot be followed by a digit. `shippedProblems` skips negative lines
+("Nothing found…", "- Pipedrive: No major feature shipments found…", "none found") through `isNegativeLine`. `VENDOR_ALIASES` maps a
+product to the company its pages use (Freshsales → freshworks, Node → nodejs; the other demo-seed CRM tools and hosts map to their own
+names) in `sourceMentionsVendor` and `hostIsVendor`, so Freshworks' page backs a Freshsales row and the ledger (D57) keeps it.
+*Extractor:* five of the eight background writes in the last run hit `TimeoutError` after the whole 30 s, with no way to tell a rate
+limit from one slow reply, and the turn's summary and claims were lost. `extractTurnMemory` now runs its own loop: up to 3 attempts, each
+with a 30 s timeout, inside a total cap of about 90 s, SDK retries off; a timeout, a 429 that is not a daily quota, a 5xx or a network
+error is retried (waiting the provider's retry-after when given), a schema failure or a daily quota is not. A failure throws
+`ExtractError`, and the `memory_writes` error row records `attempts`, `elapsedMs`, `status` and `retryAfterMs` (never the message
+body). No pending queue: a write that still fails is lost, but logged with its cause. *Eval:* a run whose turn ended on a provider 5xx
+or rate limit (also mid-stream), or whose DB has a `memory_writes` row with op `error`, is marked `infra` and rerun once
+automatically. Both attempts are kept (stored result, transcript, results.md); the rerun counts; a second infra failure is kept as it
+is, no third attempt. results.md labels the case "(rerun after provider error)" and lists both attempts under "Failures and reviews".
+I included a rate limit (429 after the middleware's retries) next to the 5xx because it is the same kind of failure.

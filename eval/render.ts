@@ -38,6 +38,9 @@ export function modelLabel(requested: string, resolved: string[]): string {
 
 const resolvedOf = (runs: RunResult[], role: "main" | "small"): string[] => runs.flatMap((r) => (r.resolved?.[role] ? [r.resolved[role] as string] : []));
 
+export const RERUN_LABEL = "(rerun after provider error)";
+const wasRerun = (runs: RunResult[]): boolean => runs.some((r) => r.firstAttempt);
+
 export const REVIEW_AT_OR_BELOW = 2;
 
 export function judgeScore(j: JudgeOutcome): number | undefined {
@@ -102,6 +105,7 @@ export function renderResults(reports: CaseReport[], meta: RunMeta): string {
     "",
     `- Cases passing every run: **${full}/${reports.length}**`,
     `- Runs passing: **${passCount(allRuns)}/${allRuns.length}**`,
+    ...(reports.some((r) => wasRerun(r.runs)) ? [`- Rerun after a provider error: ${reports.filter((r) => wasRerun(r.runs)).map((r) => r.case.id).join(", ")}`] : []),
     `- Median time to first token: ${ms(first)} · median total (last turn): ${ms(total)}`,
     `- Web searches per turn: ${searches} · mean judge score: ${avgJudge}`,
     "",
@@ -116,20 +120,26 @@ export function renderResults(reports: CaseReport[], meta: RunMeta): string {
     const ft = median(r.runs.flatMap((x) => (lastTurn(x)?.firstTokenMs == null ? [] : [lastTurn(x)?.firstTokenMs as number])));
     const tt = median(r.runs.flatMap((x) => (lastTurn(x)?.totalMs == null ? [] : [lastTurn(x)?.totalMs as number])));
     lines.push(
-      `| ${r.case.id} | ${searchModeOf(r.runs)} | ${passCount(r.runs) === r.runs.length ? "✅" : "❌"} ${passCount(r.runs)}/${r.runs.length} | ${cell(failed.join("; ") || "–")} | ${cell(soft.join("; ") || "–")} | ${judgeCell(r.runs)} | ${ms(ft)} | ${ms(tt)} |`,
+      `| ${r.case.id}${wasRerun(r.runs) ? ` ${RERUN_LABEL}` : ""} | ${searchModeOf(r.runs)} | ${passCount(r.runs) === r.runs.length ? "✅" : "❌"} ${passCount(r.runs)}/${r.runs.length} | ${cell(failed.join("; ") || "–")} | ${cell(soft.join("; ") || "–")} | ${judgeCell(r.runs)} | ${ms(ft)} | ${ms(tt)} |`,
     );
   }
 
-  const flagged = reports.filter((r) => r.runs.some((x) => !x.passed || (judgeScore(x.judge) ?? 5) <= REVIEW_AT_OR_BELOW));
+  const flagged = reports.filter((r) => wasRerun(r.runs) || r.runs.some((x) => !x.passed || (judgeScore(x.judge) ?? 5) <= REVIEW_AT_OR_BELOW));
   if (flagged.length > 0) {
     lines.push("", "## Failures and reviews", "");
     for (const r of flagged) {
       lines.push(`### ${r.case.id}`, "");
       for (const x of r.runs) {
-        const bad = x.hard.filter((h) => !h.pass);
-        const j = "score" in x.judge ? `judge ${x.judge.score}: ${x.judge.reason}` : `judge error: ${x.judge.error}`;
-        lines.push(`- run ${x.rep}: ${x.passed ? "pass" : "FAIL"} — ${j}`);
-        for (const b of bad) lines.push(`  - ✗ ${b.name}${b.detail ? `: ${b.detail}` : ""}`);
+        // A rerun shows both attempts: the one lost to the provider problem, then the one that counts.
+        const attempts = x.firstAttempt ? [{ run: x.firstAttempt, tag: `attempt 1 (discarded: ${(x.firstAttempt.infra ?? []).join("; ")})` }, { run: x, tag: "attempt 2 (counts)" }] : [{ run: x, tag: "" }];
+        for (const { run, tag } of attempts) {
+          const bad = run.hard.filter((h) => !h.pass);
+          const j = "score" in run.judge ? `judge ${run.judge.score}: ${run.judge.reason}` : `judge error: ${run.judge.error}`;
+          lines.push(`- run ${x.rep}${tag ? ` ${tag}` : ""}: ${run.passed ? "pass" : "FAIL"} — ${j}`);
+          for (const b of bad) lines.push(`  - ✗ ${b.name}${b.detail ? `: ${b.detail}` : ""}`);
+          if (!x.firstAttempt && run.infra?.length) lines.push(`  - infra: ${run.infra.join("; ")} (reran once, still failing)`);
+        }
+        if (x.infra?.length && x.firstAttempt) lines.push(`  - attempt 2 also had: ${x.infra.join("; ")}`);
       }
       lines.push("");
     }
@@ -156,8 +166,9 @@ export function renderTranscript(c: EvalCase, runs: RunResult[], meta: RunMeta):
     "",
     `**Rubric:** ${c.rubric}`,
   ];
-  for (const r of runs) {
-    lines.push("", `## Run ${r.rep} — ${r.passed ? "PASS" : "FAIL"}`);
+  const renderRun = (r: RunResult, title: string): void => {
+    lines.push("", `## ${title} — ${r.passed ? "PASS" : "FAIL"}`);
+    if (r.infra?.length) lines.push("", `Infrastructure: ${r.infra.join("; ")}`);
     for (const t of r.turns) {
       lines.push("", `**User:** ${t.message}`, "");
       if (t.queries.length) lines.push(`Searches: ${t.queries.map((q) => `\`${q}\``).join(", ")}`, "");
@@ -169,6 +180,12 @@ export function renderTranscript(c: EvalCase, runs: RunResult[], meta: RunMeta):
     }
     lines.push("", "Checks:", ...r.hard.map(checkLine), ...r.soft.map((s) => checkLine({ ...s, name: `(soft) ${s.name}` })));
     lines.push("", "score" in r.judge ? `Judge: ${r.judge.score}/5 — ${r.judge.reason}` : `Judge: error (${r.judge.error})`);
+  };
+  for (const r of runs) {
+    if (r.firstAttempt) {
+      renderRun(r.firstAttempt, `Run ${r.rep}, attempt 1 (discarded, provider error)`);
+      renderRun(r, `Run ${r.rep}, attempt 2 ${RERUN_LABEL}`);
+    } else renderRun(r, `Run ${r.rep}`);
   }
   return `${lines.join("\n")}\n`;
 }

@@ -58,7 +58,15 @@ export async function runAll(o: RunAllOptions): Promise<RunOutcome> {
         if (!first && mode.pauseMs > 0) await o.sleep(mode.pauseMs);
         first = false;
         const started = performance.now();
-        const run = await runCase(o.deps, report.case, rep);
+        let run = await runCase(o.deps, report.case, rep);
+        // An infrastructure failure (provider 5xx, failed memory write) says nothing about the agent: rerun once,
+        // keep both attempts for results.md, count the rerun (D70). A second failure is kept as it is.
+        if (run.infra && run.infra.length > 0) {
+          o.log(`INFRA ${report.case.id} run ${rep}/${mode.repeat}: ${run.infra.join("; ")} — rerunning once`);
+          if (mode.pauseMs > 0) await o.sleep(mode.pauseMs);
+          const again = await runCase(o.deps, report.case, rep);
+          run = { ...again, firstAttempt: run };
+        }
         runs.push(run);
         const failed = run.hard.filter((h) => !h.pass).map((h) => h.name);
         o.log(

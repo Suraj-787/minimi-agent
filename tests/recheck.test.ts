@@ -19,7 +19,10 @@ describe("createRecheckTracker", () => {
     expect(out.domains).toEqual(["hubspot.com"]);
     expect(t.state().uncovered).toEqual([]);
     expect(t.needsSearch()).toBe(false);
-    expect(t.note()).toBeUndefined();
+    // Everything is searched: the note tells the model not to search again (code closes the next step, D69).
+    expect(t.note()).toBe(
+      "App note: every item has been searched. Don't search again for an item whose results didn't mention it; mark it Couldn't verify. Write the answer now.",
+    );
   });
 
   it("past the 6-query cap, the rest stay uncovered: the note names them and another search is owed", () => {
@@ -29,7 +32,9 @@ describe("createRecheckTracker", () => {
     expect(out.queries).toHaveLength(MAX_QUERIES);
     expect(t.state().uncovered).toEqual(["Vendor6", "Vendor7", "Vendor8"]);
     expect(t.needsSearch()).toBe(true);
-    expect(t.note()).toBe("App note: not searched yet: Vendor6, Vendor7, Vendor8. Search them in your next web_search call before answering.");
+    expect(t.note()).toBe(
+      "App note: not searched yet: Vendor6, Vendor7, Vendor8. Search them in your next web_search call before answering. Don't search again for an item whose results didn't mention it; mark it Couldn't verify.",
+    );
     t.apply({ queries: ["Vendor6 price"] });
     expect(t.needsSearch()).toBe(false);
   });

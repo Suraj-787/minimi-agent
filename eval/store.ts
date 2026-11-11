@@ -25,7 +25,7 @@ const turn = z.object({
   totalMs: z.number().nullable(),
 });
 
-const runSchema = z.object({
+const baseRun = z.object({
   caseId: z.string(),
   rep: z.number(),
   turns: z.array(turn),
@@ -35,7 +35,9 @@ const runSchema = z.object({
   judge: z.union([z.object({ score: z.number(), reason: z.string(), modelId: z.string().optional() }), z.object({ error: z.string() })]),
   searchMode: z.enum(["mock", "live", "live (unused)"]),
   resolved: z.object({ main: z.string().optional(), small: z.string().optional() }).optional(),
+  infra: z.array(z.string()).optional(),
 });
+const runSchema = baseRun.extend({ firstAttempt: baseRun.optional() });
 
 const storedSchema = z.object({
   version: z.literal(1),

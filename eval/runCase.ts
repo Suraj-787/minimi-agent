@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { loadSeed, parseSeed, removeDbFiles } from "../scripts/seed";
 import { readFileSync } from "node:fs";
 import { runAgent, type AgentDeps } from "../src/agent/index";
-import { DAILY_QUOTA_TEXT } from "../src/agent/errors";
+import { DAILY_QUOTA_TEXT, RATE_LIMIT_TEXT, SERVER_ERROR_TEXT } from "../src/agent/errors";
 import type { Models } from "../src/agent/model";
 import { openDb, type Db } from "../src/db/index";
 import { forgetThreadMemory, getTrace, type ClaimRow, type MemoryWriteRow } from "../src/db/memoryRepo";
@@ -53,8 +53,42 @@ export interface RunResult {
   judge: JudgeOutcome;
   /** "mock": a fixture replaced the providers. "live": real search; "live (unused)": real search, never called. */
   searchMode: "mock" | "live" | "live (unused)";
+  /**
+   * Infrastructure problems in this attempt (a provider 5xx / rate limit that ended a turn, a failed memory write):
+   * what makes the orchestrator rerun the case once (D70). Absent when there were none.
+   */
+  infra?: string[];
+  /** The discarded first attempt, when this result is the rerun after an infra problem. */
+  firstAttempt?: RunResult;
   /** Model ids the providers reported (an alias like "-latest" resolves to a dated id), when they did. */
   resolved?: { main?: string; small?: string };
+}
+
+/**
+ * Why an attempt counts as an infrastructure failure rather than a wrong answer: a turn that ended on a provider
+ * 5xx or rate limit (also mid-stream), or a memory write that errored (timeout, 429...). Pure, for tests.
+ */
+export function infraReasons(
+  turns: ReadonlyArray<{ status: string; answer: string }>,
+  writes: ReadonlyArray<{ op: string; detail_json: string | null }>,
+): string[] {
+  const out: string[] = [];
+  for (const t of turns) {
+    if (t.status !== "error") continue;
+    if (t.answer.includes(SERVER_ERROR_TEXT)) out.push("provider 5xx");
+    else if (t.answer.includes(RATE_LIMIT_TEXT)) out.push("provider rate limit");
+  }
+  for (const w of writes) {
+    if (w.op !== "error") continue;
+    let name = "error";
+    try {
+      name = String((JSON.parse(w.detail_json ?? "{}") as { error?: unknown }).error ?? "error");
+    } catch {
+      // keep the generic name
+    }
+    out.push(`memory write failed (${name})`);
+  }
+  return [...new Set(out)];
 }
 
 /** Fixed pages for every call, numbered from the turn's counter; the same shape the real search returns. */
@@ -207,6 +241,7 @@ export async function runCase(deps: CaseDeps, c: EvalCase, rep: number): Promise
     }
 
     const searched = turns.some((t) => t.searchCalls > 0);
+    const infra = infraReasons(turns, observed.writes);
     return {
       caseId: c.id,
       rep,
@@ -216,6 +251,7 @@ export async function runCase(deps: CaseDeps, c: EvalCase, rep: number): Promise
       passed: hard.every((h) => h.pass),
       judge,
       searchMode: c.mockSearch ? "mock" : searched ? "live" : "live (unused)",
+      ...(infra.length > 0 ? { infra } : {}),
       ...(resolvedMain || ("modelId" in judge && judge.modelId)
         ? { resolved: { ...(resolvedMain ? { main: resolvedMain } : {}), ...("modelId" in judge && judge.modelId ? { small: judge.modelId } : {}) } }
         : {}),

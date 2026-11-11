@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   datesIn,
   hostIsVendor,
+  isNegativeLine,
   rawLinks,
   shippedProblems,
   shippedWordingProblems,
@@ -234,3 +235,79 @@ describe("soft check: status vs evidence label (D59)", () => {
   });
 });
 
+
+describe("D70: A4 checker fixes", () => {
+  describe("datesIn: a word before the date cannot swallow the day number", () => {
+    it.each([
+      ["(reported 10 November 2026) [9]", ["2026-11-10"]],
+      ["No shipments found dated after 9 November 2026.", ["2026-11-09"]],
+      ["announced on 3rd Nov, 2026", ["2026-11-03"]],
+      ["since 12 of March", ["2026-03-12"]],
+      ["released November 12, 2026", ["2026-11-12"]],
+      ["Sept. 5 2026", ["2026-09-05"]],
+      ["Between 1 Nov and 9 Nov", ["2026-11-01", "2026-11-09"]],
+      ["updated 2026-11-10 and reported 9 Nov 2026", ["2026-11-10", "2026-11-09"]],
+    ])("%s", (line, expected) => {
+      expect(datesIn(line, 2026).sort()).toEqual([...expected].sort());
+    });
+    it("ignores things that are not dates: other words, a bare year, a number after a month-like word", () => {
+      expect(datesIn("the may change soon", 2026)).toEqual([]);
+      expect(datesIn("version 2026 shipped", 2026)).toEqual([]);
+      expect(datesIn("market 45 reported", 2026)).toEqual([]);
+      expect(datesIn("10 Foobar 2026", 2026)).toEqual([]);
+    });
+  });
+
+  describe("shippedProblems: negative lines are not items", () => {
+    it.each([
+      "Nothing found dated after 2026-11-09.",
+      "- Pipedrive: No major feature shipments found dated after 9 November 2026.",
+      "* Zoho CRM — none found",
+      "1. Freshsales: Nothing announced since Monday.",
+    ])("exempts %s", (line) => {
+      expect(isNegativeLine(line)).toBe(true);
+    });
+    it("does not exempt a real item or a line that merely contains 'no'", () => {
+      expect(isNegativeLine("- HubSpot: Added Agent Builder (reported 10 November 2026) [9].")).toBe(false);
+      expect(isNegativeLine("- Salesforce: Notable price rise, no longer cheap.")).toBe(false);
+    });
+    it("the A4 answer: dated items are checked, per-vendor 'No … found' lines pass", () => {
+      const answer = [
+        "Shipped since 2026-11-09:",
+        "- HubSpot Sales Hub: Added Agent Builder and credit-based AI pricing (reported 10 November 2026) [9].",
+        "- Pipedrive: No major feature shipments found dated after 9 November 2026.",
+        "- Zoho CRM: No major feature shipments found dated after 9 November 2026.",
+      ].join("\n");
+      expect(shippedProblems(answer, "2026-11-09")).toEqual([]);
+    });
+    it("a dated item on or before the since date is still a problem, and an undated item too", () => {
+      const answer = ["Shipped since 2026-11-09:", "- HubSpot: Added Agent Builder (reported 7 November 2026) [9].", "- Zoho CRM: Launched a new plan [4]."].join("\n");
+      expect(shippedProblems(answer, "2026-11-09").map((p) => p.reason)).toEqual(["not-after-since", "undated"]);
+    });
+  });
+
+  describe("source mismatch: product-to-company aliases", () => {
+    const freshworks: ResultText = { url: "https://www.freshworks.com/crm/pricing-compare/", title: "Compare plans", snippet: "Growth $9 per user" };
+    const rows = (item: string) =>
+      parseVerifyTable(["| Item | Said (date) | Then → Now | Status | Evidence date | Source |", "|---|---|---|---|---|---|", `| ${item} | 2026-11-09 | $39 → $39 | Unchanged | undated | [5] |`, "", "Takeaway."].join("\n"))!;
+    it("Freshsales is backed by freshworks.com, but not by an unrelated vendor's page", () => {
+      expect(sourceMismatches(rows("Freshsales"), new Map([[5, freshworks]]))).toEqual([]);
+      expect(sourceMentionsVendor("Freshsales Pro", freshworks)).toBe(true);
+      expect(hostIsVendor("Freshsales", freshworks.url)).toBe(true);
+      const hubspot: ResultText = { url: "https://blog.hubspot.com/ai", title: "AI CRMs", snippet: "generative AI" };
+      expect(sourceMismatches(rows("Freshsales"), new Map([[5, hubspot]]))).toHaveLength(1);
+    });
+    it("the other demo-seed tools match their own sites and not each other's", () => {
+      const own: Array<[string, string]> = [
+        ["HubSpot Sales Hub", "https://www.hubspot.com/pricing/sales"],
+        ["Pipedrive", "https://www.pipedrive.com/en/pricing"],
+        ["Salesforce Sales Cloud", "https://www.salesforce.com/sales/pricing/"],
+        ["Zoho CRM", "https://www.zoho.com/crm/pricing/"],
+      ];
+      for (const [item, url] of own) {
+        expect(sourceMentionsVendor(item, { url, title: "Pricing", snippet: "" }), item).toBe(true);
+        expect(sourceMentionsVendor(item, { url: "https://example.test/other", title: "Other", snippet: "nothing relevant" }), item).toBe(false);
+      }
+    });
+  });
+});

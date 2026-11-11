@@ -19,6 +19,10 @@ function statusOf(err: unknown): number | undefined {
 export const DAILY_QUOTA_TEXT =
   "The model provider's daily free quota is used up. It resets tomorrow; try again then, or use another API key or provider.";
 
+/** Exported so the eval runner can tell a provider failure (worth one rerun) from a wrong answer (D70). */
+export const RATE_LIMIT_TEXT = "The model provider is rate-limiting requests (the free tier has low limits). Wait a minute and try again.";
+export const SERVER_ERROR_TEXT = "The model provider had a server error. Try again in a moment.";
+
 /** Maps any thrown value to a short, user-readable sentence. */
 export function friendlyError(err: unknown): string {
   const status = statusOf(err);
@@ -33,10 +37,10 @@ export function friendlyError(err: unknown): string {
     return DAILY_QUOTA_TEXT;
   }
   if (status === 429) {
-    return "The model provider is rate-limiting requests (the free tier has low limits). Wait a minute and try again.";
+    return RATE_LIMIT_TEXT;
   }
   if (status !== undefined && status >= 500) {
-    return "The model provider had a server error. Try again in a moment.";
+    return SERVER_ERROR_TEXT;
   }
   if (err instanceof Error && err.name === "AI_LoadAPIKeyError") {
     return "No API key is configured for the model provider. Add it to .env and restart the server.";
