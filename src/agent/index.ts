@@ -149,6 +149,8 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
   // Where each step's time went (model vs search), for the trace and the "why?" drawer. A step's search
   // time is added when its tool call finishes, which happens before the next step starts.
   const stepTimings = new Map<number, StepTiming>();
+  // The model id the provider reported (an alias like "-latest" resolves to a dated id), for evals and the trace.
+  let resolvedModel: string | undefined;
   const timing = (step: number): StepTiming => {
     let t = stepTimings.get(step);
     if (!t) stepTimings.set(step, (t = { step, mode: "auto", modelMs: 0, firstPartMs: null, searchMs: 0, queries: 0 }));
@@ -250,7 +252,10 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
                 toolName: "web_search",
                 owed: () => (recheck ? owedWords(recheck.state()) : undefined),
                 ...(models.mainThinking ? { thinking: models.mainThinking } : {}),
-                onCall: (c) => Object.assign(timing(c.step), { mode: c.mode, modelMs: c.modelMs, firstPartMs: c.firstPartMs, ...(c.thinking ? { thinking: c.thinking } : {}) }),
+                onCall: (c) => {
+                  if (c.resolvedModelId) resolvedModel = c.resolvedModelId;
+                  Object.assign(timing(c.step), { mode: c.mode, modelMs: c.modelMs, firstPartMs: c.firstPartMs, ...(c.thinking ? { thinking: c.thinking } : {}) });
+                },
               }),
             });
       const result = streamText({
@@ -415,7 +420,7 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
         firstStatusMs: firstStatusMs ?? null,
         firstTokenMs: firstTokenMs ?? null,
         totalMs: totalMs ?? null,
-        usage: { ...usage, retries },
+        usage: { ...usage, retries, ...(resolvedModel ? { resolvedModel } : {}) },
         steps: [...stepTimings.values()].sort((a, b) => a.step - b.step).map(roundTiming),
         ...(errors.length > 0 ? { errors } : {}),
         createdAt: now(),

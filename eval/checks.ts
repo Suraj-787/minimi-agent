@@ -1,5 +1,6 @@
 import type { ClaimRow, MemoryWriteRow } from "../src/db/memoryRepo";
 import { localDate } from "../src/lib/tz";
+import { citedNumbers } from "../src/memory/write";
 import { parseVerifyTable } from "../src/memory/verifyTable";
 import type { EvalCase } from "./cases";
 
@@ -106,9 +107,25 @@ export function runChecks(c: EvalCase, o: Observed): { hard: CheckResult[]; soft
   const searched = o.turns.some((t) => t.searchCalls > 0);
   if (k.searched !== undefined) hard.push(result("searched", searched === k.searched, `expected ${k.searched ? "a search" : "no search"}, got ${searched ? "a search" : "none"}`));
   if (k.cited !== undefined) {
-    // An [n] in the answer that is one of the numbers the tool returned that same turn.
-    const cited = o.turns.some((t) => [...t.answer.matchAll(/\[(\d+)\]/g)].some((m) => t.sourceNumbers.includes(Number(m[1]))));
-    hard.push(result("cited", cited === k.cited, `expected ${k.cited ? "an [n] matching a returned source" : "no citation"}`));
+    // [1], [1, 5], [1,5] and [1][5] all count. Every number must be one the tool returned that same turn:
+    // an invented [9] is a failure, not a bonus. Cited = some turn cites, and no turn cites a number it never got.
+    const per = o.turns.map((t) => {
+      const nums = [...citedNumbers(t.answer)];
+      return { nums, invalid: nums.filter((n) => !t.sourceNumbers.includes(n)) };
+    });
+    const invalid = per.flatMap((p) => p.invalid);
+    const cited = per.some((p) => p.nums.length > 0) && invalid.length === 0;
+    hard.push(
+      result(
+        "cited",
+        cited === k.cited,
+        k.cited
+          ? invalid.length > 0
+            ? `cites [${invalid.join(", ")}], which no search returned`
+            : "no [n] citation in the answer"
+          : "expected no citation",
+      ),
+    );
   }
   if (k.resolvedDates) {
     hard.push(result("resolvedDates", same(k.resolvedDates, o.trace.resolvedDates), `expected ${k.resolvedDates.join(",")}, trace has ${o.trace.resolvedDates.join(",") || "none"}`));

@@ -154,6 +154,8 @@ export interface CallInfo {
   modelMs: number;
   /** Until the first content part (text or tool call) arrived; null when none did. */
   firstPartMs: number | null;
+  /** The model id the provider's response reported (what an alias like "-latest" resolved to), when it did. */
+  resolvedModelId?: string;
 }
 
 export interface EnforcementOptions {
@@ -174,16 +176,25 @@ function noteMessage(text: string): Prompt[number] {
 const PREAMBLE_PARTS = new Set(["stream-start", "response-metadata", "raw"]);
 
 /** Passes the stream through and reports its timing once it has fully ended. */
-function timed(stream: ReadableStream<Part>, t0: number, done: (modelMs: number, firstPartMs: number | null) => void): ReadableStream<Part> {
+function timed(
+  stream: ReadableStream<Part>,
+  t0: number,
+  done: (modelMs: number, firstPartMs: number | null, resolvedModelId?: string) => void,
+): ReadableStream<Part> {
   let first: number | null = null;
+  let resolved: string | undefined;
   return stream.pipeThrough(
     new TransformStream<Part, Part>({
       transform(part, controller) {
         if (first === null && !PREAMBLE_PARTS.has(part.type)) first = performance.now() - t0;
+        if (part.type === "response-metadata") {
+          const id = (part as { modelId?: unknown }).modelId;
+          if (typeof id === "string" && id) resolved = id;
+        }
         controller.enqueue(part);
       },
       flush() {
-        done(performance.now() - t0, first);
+        done(performance.now() - t0, first, resolved);
       },
     }),
   );
@@ -205,8 +216,8 @@ export function toolChoiceEnforcement(o: EnforcementOptions): LanguageModelMiddl
       const extra = thinkingRejected.has(modelKey) ? undefined : o.thinking?.[kind];
       const params = extra ? { ...original, providerOptions: mergeProviderOptions(original.providerOptions, extra) } : original;
       const report = (stream: ReadableStream<Part>, applied: boolean) =>
-        timed(stream, t0, (modelMs, firstPartMs) =>
-          o.onCall?.({ step, mode, ...(applied ? { thinking: kind } : {}), modelMs, firstPartMs }),
+        timed(stream, t0, (modelMs, firstPartMs, resolvedModelId) =>
+          o.onCall?.({ step, mode, ...(applied ? { thinking: kind } : {}), modelMs, firstPartMs, ...(resolvedModelId ? { resolvedModelId } : {}) }),
         );
       let result: StreamResult;
       let applied = !!extra;

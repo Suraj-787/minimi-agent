@@ -11,7 +11,8 @@ import type { Search, SearchInput } from "../src/search/index";
 import type { SearchResult } from "../src/search/types";
 import type { EvalCase, MockPage } from "./cases";
 import { runChecks, type CheckResult, type Observed, type TurnObservation } from "./checks";
-import { judgeCase, type Judgement } from "./judge";
+import { judgeCase, type Judgement, type JudgeMemory } from "./judge";
+import { describeMemory } from "../src/server/memoryRoutes";
 
 /** The day's model quota is gone: no later case can work either, so the whole run stops (D61). */
 export class QuotaExhausted extends Error {
@@ -52,6 +53,8 @@ export interface RunResult {
   judge: JudgeOutcome;
   /** "mock": a fixture replaced the providers. "live": real search; "live (unused)": real search, never called. */
   searchMode: "mock" | "live" | "live (unused)";
+  /** Model ids the providers reported (an alias like "-latest" resolves to a dated id), when they did. */
+  resolved?: { main?: string; small?: string };
 }
 
 /** Fixed pages for every call, numbered from the turn's counter; the same shape the real search returns. */
@@ -173,6 +176,18 @@ export async function runCase(deps: CaseDeps, c: EvalCase, rep: number): Promise
     };
     const { hard, soft } = runChecks(c, observed);
 
+    // What the agent was shown from earlier chats, so recalled history is not scored as invention.
+    const memoryIds = parseJson<{ turns?: string[]; inThreadTurns?: string[]; claims?: string[]; claimsAtRecall?: JudgeMemory["claims"] }>(trace?.memory_ids_json, {});
+    const described = describeMemory(db, memoryIds, 600);
+    const shown: JudgeMemory = {
+      turns: [...described.turns, ...described.inThreadTurns].map((t) => ({ date: t.date, text: t.text })),
+      claims: memoryIds.claimsAtRecall ?? described.claims,
+    };
+    const resolvedMain = turnIds
+      .map((id) => parseJson<{ resolvedModel?: string }>(getTrace(db, id)?.usage_json, {}).resolvedModel)
+      .filter((m): m is string => !!m)
+      .at(-1);
+
     const lastTurn = turns[turns.length - 1];
     let judge: JudgeOutcome;
     try {
@@ -181,6 +196,7 @@ export async function runCase(deps: CaseDeps, c: EvalCase, rep: number): Promise
         answer: lastTurn?.answer ?? "",
         rubric: c.rubric,
         sources: lastTurn?.sources ?? [],
+        memory: shown,
         now: c.now,
         mockedSearch: !!c.mockSearch,
       });
@@ -200,6 +216,9 @@ export async function runCase(deps: CaseDeps, c: EvalCase, rep: number): Promise
       passed: hard.every((h) => h.pass),
       judge,
       searchMode: c.mockSearch ? "mock" : searched ? "live" : "live (unused)",
+      ...(resolvedMain || ("modelId" in judge && judge.modelId)
+        ? { resolved: { ...(resolvedMain ? { main: resolvedMain } : {}), ...("modelId" in judge && judge.modelId ? { small: judge.modelId } : {}) } }
+        : {}),
     };
   } finally {
     db.close();

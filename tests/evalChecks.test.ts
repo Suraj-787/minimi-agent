@@ -67,11 +67,35 @@ describe("runChecks", () => {
     expect(failed(mk({ cited: true }), obs({ answer: "no marker" }))).toEqual(["cited"]);
   });
 
+  it.each([
+    ["[1, 5]", "Node 26 [1, 5]."],
+    ["[1,5]", "Node 26 [1,5]."],
+    ["[1][5]", "Node 26 [1][5]."],
+    ["[1] and later [5]", "Node 26 [1] and LTS [5]."],
+  ])("cited accepts %s when each number is a returned source", (_n, answer) => {
+    const o = obs({ answer });
+    o.turns[0]!.sourceNumbers = [1, 2, 5];
+    expect(failed(mk({ cited: true }), o)).toEqual([]);
+  });
+
+  it("cited fails when any cited number was never returned, and says which", () => {
+    const o = obs({ answer: "Node 26 [1, 9]." });
+    o.turns[0]!.sourceNumbers = [1, 2];
+    const r = runChecks(mk({ cited: true }), o).hard.find((h) => h.name === "cited");
+    expect(r?.pass).toBe(false);
+    expect(r?.detail).toContain("9");
+  });
+
+  it("cited: false passes only when nothing is cited", () => {
+    expect(failed(mk({ cited: false }), obs({ answer: "no markers" }))).toEqual([]);
+    expect(failed(mk({ cited: false }), obs({ answer: "see [1]" }))).toEqual(["cited"]);
+  });
+
   it("citations are matched per turn, not against another turn's numbers", () => {
     const o = obs();
     o.turns = [
       { answer: "first [1]", status: "complete", searchCalls: 1, sourceNumbers: [1] },
-      { answer: "second [3]", status: "complete", searchCalls: 0, sourceNumbers: [] },
+      { answer: "second turn, no markers", status: "complete", searchCalls: 0, sourceNumbers: [] },
     ];
     expect(failed(mk({ cited: true }), o)).toEqual([]);
     o.turns[0]!.answer = "first [4]";

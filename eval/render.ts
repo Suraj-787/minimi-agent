@@ -30,6 +30,14 @@ export function median(xs: number[]): number | undefined {
 const ms = (n: number | undefined): string => (n === undefined ? "–" : n >= 1000 ? `${(n / 1000).toFixed(1)} s` : `${n} ms`);
 const cell = (s: string): string => s.replace(/\|/g, "\\|").replace(/\n/g, " ");
 
+/** "`gemini-flash-latest` → `gemini-3.5-flash-001`" when the provider reported a different id; the plain id otherwise. */
+export function modelLabel(requested: string, resolved: string[]): string {
+  const ids = [...new Set(resolved)].filter((r) => r !== requested);
+  return ids.length === 0 ? `\`${requested}\`` : `\`${requested}\` → ${ids.map((i) => `\`${i}\``).join(", ")}`;
+}
+
+const resolvedOf = (runs: RunResult[], role: "main" | "small"): string[] => runs.flatMap((r) => (r.resolved?.[role] ? [r.resolved[role] as string] : []));
+
 export const REVIEW_AT_OR_BELOW = 2;
 
 export function judgeScore(j: JudgeOutcome): number | undefined {
@@ -85,7 +93,7 @@ export function renderResults(reports: CaseReport[], meta: RunMeta): string {
   const lines: string[] = [
     "# Eval results",
     "",
-    `Uncached run against the real model. Ran ${ranSpan(reports, meta)}. Provider \`${meta.provider}\`, main \`${meta.mainModel}\`, small/judge \`${meta.smallModel}\`, thinking ${meta.thinking}.`,
+    `Uncached run against the real model. Ran ${ranSpan(reports, meta)}. Provider \`${meta.provider}\`, main ${modelLabel(meta.mainModel, allRuns.flatMap((r) => resolvedOf([r], "main")))}, small/judge ${modelLabel(meta.smallModel, allRuns.flatMap((r) => resolvedOf([r], "small")))}, thinking ${meta.thinking}.`,
     `Frozen clock per case (\`now\` in cases.json), ${meta.repeat} run${meta.repeat === 1 ? "" : "s"} per case, ${ms(meta.pauseMs)} pause between runs.`,
     "",
     "Pass/fail comes from the deterministic checks only. The judge score (1-5) is informational; a score of 2 or less is flagged for review. Soft checks are warnings.",
@@ -142,7 +150,7 @@ export function renderTranscript(c: EvalCase, runs: RunResult[], meta: RunMeta):
     `- Category: ${c.category}`,
     `- Clock: ${c.now} (${c.timezone}) · seed: ${c.seed ? "yes" : "no"}`,
     `- Search: ${searchModeOf(runs)}`,
-    `- Models: ${meta.provider} · main \`${meta.mainModel}\` · small \`${meta.smallModel}\` · thinking ${meta.thinking}`,
+    `- Models: ${meta.provider} · main ${modelLabel(meta.mainModel, resolvedOf(runs, "main"))} · small ${modelLabel(meta.smallModel, resolvedOf(runs, "small"))} · thinking ${meta.thinking}`,
     `- Ran: ${meta.ranAt}`,
     `- Pass: ${passCount(runs)}/${runs.length}`,
     "",

@@ -32,8 +32,9 @@ const runSchema = z.object({
   hard: z.array(check),
   soft: z.array(check),
   passed: z.boolean(),
-  judge: z.union([z.object({ score: z.number(), reason: z.string() }), z.object({ error: z.string() })]),
+  judge: z.union([z.object({ score: z.number(), reason: z.string(), modelId: z.string().optional() }), z.object({ error: z.string() })]),
   searchMode: z.enum(["mock", "live", "live (unused)"]),
+  resolved: z.object({ main: z.string().optional(), small: z.string().optional() }).optional(),
 });
 
 const storedSchema = z.object({

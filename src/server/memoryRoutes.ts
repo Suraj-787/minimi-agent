@@ -31,7 +31,7 @@ const MAX_LISTED = 25;
 const clip = (s: string, n = 160): string => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
 
 /** What a recalled turn or claim looks like in the drawer: words, never raw ids. */
-function describeMemory(db: Db, ids: { turns?: string[]; inThreadTurns?: string[]; claims?: string[] }) {
+export function describeMemory(db: Db, ids: { turns?: string[]; inThreadTurns?: string[]; claims?: string[] }, clipTo = 160) {
   const turnStmt = db.prepare(
     `SELECT u.local_date AS date, COALESCE(s.summary, u.text) AS text, a.thread_id AS threadId
      FROM messages a
@@ -41,7 +41,7 @@ function describeMemory(db: Db, ids: { turns?: string[]; inThreadTurns?: string[
   );
   const describeTurn = (id: string) => {
     const row = turnStmt.get(id) as { date: string; text: string } | undefined;
-    return row ? { date: row.date, text: clip(row.text) } : { date: null, text: "(turn no longer exists)" };
+    return row ? { date: row.date, text: clip(row.text, clipTo) } : { date: null, text: "(turn no longer exists)" };
   };
   const claims = (ids.claims ?? []).slice(0, MAX_LISTED).map((id) => {
     const c = getClaim(db, id);

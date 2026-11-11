@@ -23,10 +23,10 @@ describe("parseThinking / env", () => {
     expect(parseThinking("8192")).toBe(8192);
     for (const bad of ["", "max", "-1", "1.5", "lots"]) expect(parseThinking(bad), bad).toBeUndefined();
   });
-  it("MAIN_THINKING defaults to low for tool steps; the answer step keeps the provider default", () => {
+  it("MAIN_THINKING and MAIN_THINKING_ANSWER both default to low (the answer step took ~48 s to its first token at the provider default)", () => {
     const e = loadEnv(BASE);
     expect(e.MAIN_THINKING).toBe("low");
-    expect(e.MAIN_THINKING_ANSWER).toBe("default");
+    expect(e.MAIN_THINKING_ANSWER).toBe("low");
     expect(loadEnv({ ...BASE, MAIN_THINKING: "minimal", MAIN_THINKING_ANSWER: "2048" })).toMatchObject({ MAIN_THINKING: "minimal", MAIN_THINKING_ANSWER: 2048 });
     expect(() => loadEnv({ ...BASE, MAIN_THINKING: "max" })).toThrow(/MAIN_THINKING/);
   });
@@ -53,7 +53,7 @@ describe("thinkingOptions", () => {
       tool: { google: { thinkingConfig: { thinkingLevel: "low" } } },
       answer: { google: { thinkingConfig: { thinkingLevel: "medium" } } },
     });
-    expect(getModels(loadEnv({ ...BASE, MAIN_THINKING: "default" })).mainThinking).toBeUndefined();
+    expect(getModels(loadEnv({ ...BASE, MAIN_THINKING: "default", MAIN_THINKING_ANSWER: "default" })).mainThinking).toBeUndefined();
   });
   it("stepKind: the first step and forced steps are tool steps, later ones answer", () => {
     expect(stepKind(0, "auto")).toBe("tool");

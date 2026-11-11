@@ -21,7 +21,7 @@ describe("loadEnv", () => {
       PORT: 8787,
       MAX_STEPS: 4,
       DB_PATH: "./data/agent.db",
-      MAIN_MODEL: "gemini-flash-latest",
+      MAIN_MODEL: "gemini-flash-lite-latest",
       SMALL_MODEL: "gemini-flash-lite-latest",
       DEV_LLM_CACHE: false,
     });

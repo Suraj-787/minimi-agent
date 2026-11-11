@@ -33,7 +33,8 @@ const providerKeyVar: Record<Provider, string> = {
 };
 
 // Gemini ids are only a sane default for Gemini; other providers must name their models.
-const GOOGLE_DEFAULTS = { main: "gemini-flash-latest", small: "gemini-flash-lite-latest" };
+// Flash-Lite for both: Flash needs a billed key (free tier: Flash 5 requests/min and 20/day, Flash-Lite 15/min and 500/day, 2026-11-11).
+const GOOGLE_DEFAULTS = { main: "gemini-flash-lite-latest", small: "gemini-flash-lite-latest" };
 
 // default | minimal | low | medium | high | a token budget. Only the Google provider uses it (agent/thinking.ts).
 const thinkingSchema = (fallback: string) =>
@@ -65,7 +66,7 @@ const rawSchema = z.object({
   NOW: z.preprocess(blankToUndefined, isoWithOffsetSchema.optional()),
   DEV_LLM_CACHE: z.preprocess(blankToUndefined, z.enum(["0", "1"]).default("0")),
   MAIN_THINKING: thinkingSchema("low"),
-  MAIN_THINKING_ANSWER: thinkingSchema("default"),
+  MAIN_THINKING_ANSWER: thinkingSchema("low"),
 });
 
 const envSchema = rawSchema

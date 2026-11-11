@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { loadCases, type EvalCase } from "../eval/cases";
 import { QuotaExhausted, runCase, type CaseDeps } from "../eval/runCase";
 import { APICallError } from "ai";
+import { buildJudgePrompt, renderMemory } from "../eval/judge";
+import { modelLabel, renderResults, renderTranscript } from "../eval/render";
 import { failingModel, objectModel, scriptedModel, textModel } from "./helpers/mockModel";
 import { noSearch } from "./helpers/search";
 
@@ -34,7 +36,7 @@ describe("runCase", () => {
     const r = await runCase(deps(textModel(["Doing well, thanks! What can I help with?"]), smallModel({ summary: "", claims: [] })), byId("A6"), 1);
     expect(r.passed).toBe(true);
     expect(r.searchMode).toBe("live (unused)");
-    expect(r.judge).toEqual({ score: 4, reason: "fine" });
+    expect(r.judge).toMatchObject({ score: 4, reason: "fine" });
     expect(r.turns[0]?.searchCalls).toBe(0);
   });
 
@@ -142,5 +144,84 @@ describe("runCase", () => {
     expect(r.searchMode).toBe("live");
     expect(r.hard.find((h) => h.name === "searched")?.pass).toBe(true);
     expect(r.hard.find((h) => h.name === "cited")?.pass).toBe(true);
+  });
+});
+
+const prompts = (m: ReturnType<typeof objectModel>) => m.doGenerateCalls.map((c) => JSON.stringify(c.prompt));
+
+describe("judge input (D68)", () => {
+  it("A1: the judge is shown the recalled 3 Nov memory, so correct recall is not scored as invention", async () => {
+    const small = smallModel({ summary: "", claims: [] });
+    await runCase(deps(textModel(["On 3 Nov you asked about Postgres hosting and Bun."]), small), byId("A1"), 1);
+    const judgePrompt = prompts(small).find((p) => p.includes("<rubric>")) ?? "";
+    expect(judgePrompt).toContain("recalled_memory");
+    expect(judgePrompt).toContain("2026-11-03"); // the recalled turn's date
+    expect(judgePrompt).toMatch(/Neon/); // a claim recalled with it
+    expect(judgePrompt).not.toContain("<recalled_memory>\\n(nothing recalled)");
+  });
+
+  it("A6: nothing recalled is stated, so a claimed past chat would count as invented", async () => {
+    const small = smallModel({ summary: "", claims: [] });
+    await runCase(deps(textModel(["Doing well, thanks!"]), small), byId("A6"), 1);
+    expect(prompts(small).find((p) => p.includes("<rubric>"))).toContain("<recalled_memory>\\n(nothing recalled)");
+  });
+
+  it("renderMemory and buildJudgePrompt", () => {
+    expect(renderMemory(undefined)).toBe("(nothing recalled)");
+    const text = renderMemory({ turns: [{ date: "2026-11-03", text: "Compared Neon." }], claims: [{ entity: "Neon", attribute: "price", value: "$19", status: "current", said: "2026-11-03" }] });
+    expect(text).toContain("2026-11-03: Compared Neon.");
+    expect(text).toContain("claim: Neon | price | $19 | said 2026-11-03 | current");
+    expect(buildJudgePrompt({ messages: ["q"], answer: "a", rubric: "r", sources: [], now: "n", mockedSearch: false })).toContain("(nothing recalled)");
+  });
+});
+
+describe("resolved model ids (D68)", () => {
+  it("records the id the provider reported for the chat model and the judge, and shows it in results.md and the transcript", async () => {
+    // A chat model whose stream reports a resolved id in its response metadata.
+    const inner = textModel(["Doing well, thanks!"]);
+    const main = new MockLanguageModelV4({
+      doStream: async (o) => {
+        const r = await inner.doStream(o);
+        const reader = (r.stream as ReadableStream<{ type: string }>).getReader();
+        return {
+          ...r,
+          stream: new ReadableStream({
+            async start(c) {
+              for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                c.enqueue(value);
+                if (value.type === "stream-start") c.enqueue({ type: "response-metadata", id: "r1", modelId: "gemini-lite-resolved-007", timestamp: new Date() });
+              }
+              c.close();
+            },
+          }) as never,
+        };
+      },
+    });
+    let i = 0;
+    const small = new MockLanguageModelV4({
+      doGenerate: async () => ({
+        content: [{ type: "text", text: JSON.stringify(i++ === 0 ? { summary: "", claims: [] } : { score: 4, reason: "ok" }) }],
+        finishReason: { unified: "stop", raw: undefined },
+        usage: { inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: 1, reasoning: undefined } },
+        warnings: [],
+        response: { id: "j1", modelId: "judge-resolved-003", timestamp: new Date() },
+      }),
+    });
+    const r = await runCase(deps(main, small), byId("A6"), 1);
+    expect(r.resolved).toEqual({ main: "gemini-lite-resolved-007", small: "judge-resolved-003" });
+
+    const meta = { provider: "google", mainModel: "gemini-flash-lite-latest", smallModel: "gemini-flash-lite-latest", thinking: "tool low / answer low", ranAt: "2026-11-12 05:30 UTC", repeat: 1, pauseMs: 0 };
+    const md = renderResults([{ case: byId("A6"), runs: [r] }], meta);
+    expect(md).toContain("`gemini-flash-lite-latest` → `gemini-lite-resolved-007`");
+    expect(md).toContain("→ `judge-resolved-003`");
+    expect(renderTranscript(byId("A6"), [r], meta)).toContain("→ `gemini-lite-resolved-007`");
+  });
+
+  it("modelLabel shows only the requested id when nothing differs or nothing was reported", () => {
+    expect(modelLabel("m", [])).toBe("`m`");
+    expect(modelLabel("m", ["m"])).toBe("`m`");
+    expect(modelLabel("m", ["x", "x", "y"])).toBe("`m` → `x`, `y`");
   });
 });

@@ -533,3 +533,18 @@ and make no failed attempt; one warning is logged per model (`hint: set MAIN_THI
 not mention thinking, and any other status, is still an error. The trace's step timing shows `thinking` only when it was really
 sent. *Limit:* only a thrown HTTP error is handled; a provider that reports the 400 as an error part inside an open stream is not.
 Because the memory is per process, set `MAIN_THINKING=default` in `.env` to stop the one wasted attempt after a restart.
+
+## Phase 6 — eval triage
+
+**D68 — Eval fixes from the second run.** (1) The judge now sees what the agent saw: the recalled turns (summaries, 600 chars each)
+and the claims as they stood at recall, read from the trace, in a `<recalled_memory>` section; the instructions say a fact found
+there is not invented, and one that contradicts it or goes beyond it is. Before, correct recall of seeded history was scored as
+invention (A1 got 1, A4 got 3). (2) `cited` uses `citedNumbers` (the same reader as the memory writer): `[1]`, `[1, 5]`, `[1,5]`
+and `[1][5]` all count, and every cited number must be one the search returned that turn; an invented `[9]` fails the check. (3)
+`MAIN_THINKING_ANSWER` defaults to `low`: the answer step took about 48 s to its first token in A3 and A4 against 3-7 s of model
+time per forced search step (D65 had left it at the provider default). (4) `.env.example` and the env fallback default both models to
+`gemini-flash-lite-latest`; Flash needs a billed key (free tier, 2026-11-11: Flash 5 requests/min and 20/day, Flash-Lite 15/min and
+500/day); the README says a verify turn uses about 4 model requests. (5) The model id the provider reports in its response metadata
+(what an alias like `-latest` resolved to) is kept: per step in the trace (`usage.resolvedModel`), per run in the stored result, and
+shown in results.md and the transcripts as `requested → resolved` for both the main model and the judge. Providers that do not
+report one show just the requested id.

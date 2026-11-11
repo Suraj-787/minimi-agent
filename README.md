@@ -16,6 +16,11 @@ Requires Node ≥ 22 (`nvm use` reads `.nvmrc`). Keys: Gemini (free at https://a
 (https://dashboard.exa.ai) and/or Tavily (https://app.tavily.com). To use OpenAI or Anthropic
 instead, set `LLM_PROVIDER` and the matching key and model ids in `.env`.
 
+**Model quota.** `.env.example` defaults both models to Gemini Flash-Lite, because Flash needs a billed key. Free-tier limits as of
+2026-11-11: Flash 5 requests/min and 20/day, Flash-Lite 15/min and 500/day. A verify turn ("is that still correct?") uses about 4
+model requests: one or two forced search steps, the answer, and the background memory write; a plain question uses about 2. A full
+`npm run eval` adds the judge call per case, so on the free tier use Flash-Lite and `npm run eval -- --resume` across days.
+
 ## Try the memory features
 ```bash
 npm run seed              # loads 4 past conversations dated 2, 3 and 9 days before today
@@ -35,5 +40,5 @@ Then ask:
 
 ## Troubleshooting
 - **"Rate-limited, retrying…"**: the Gemini free tier has low per-day limits. Wait, use another key, or switch provider in `.env`.
-- **Slow first token on verify questions**: `MAIN_THINKING` (default `low`) sets the thinking effort of the main model's search steps and `MAIN_THINKING_ANSWER` the answer step (Google only; see `.env.example`). The "why?" drawer shows model vs search time per step.
+- **Slow first token on verify questions**: `MAIN_THINKING` (default `low`) sets the thinking effort of the main model's search steps and `MAIN_THINKING_ANSWER` (default `low` too) the answer step (Google only; see `.env.example`). The "why?" drawer shows model vs search time per step.
 - **Can't start**: `npm run dev` checks your Node version (≥ 22) and `.env` first and tells you what's missing.
