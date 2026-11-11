@@ -31,7 +31,7 @@ Then ask:
 | `npm run dev` | server + web with hot reload |
 | `npm run chat` | terminal chat using the same agent core |
 | `npm test` | unit tests (no network) |
-| `npm run eval` | full eval with fixed date + seeded history → `eval/results.md` (uses API quota) |
+| `npm run eval` | full eval (fixed date + seeded history) → `eval/results.md` + `eval/transcripts/`; uses API quota. Flags: `--only A2,A3`, `--repeat N`, `--pause-ms MS`, `--no-write`, `--cache` (dev only, writes nothing) |
 
 ## Troubleshooting
 - **"Rate-limited, retrying…"**: the Gemini free tier has low per-day limits. Wait, use another key, or switch provider in `.env`.

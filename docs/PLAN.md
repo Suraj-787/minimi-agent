@@ -92,17 +92,17 @@ after a verify turn with a changed value, the DB shows the old claim `superseded
 forgetting a claim removes it from the next turn's recall (test); the debug drawer shows a full trace; first-token latency is logged.
 
 ## Phase 6 — Evals
-- [ ] `eval/run.ts`: for each case → fresh temp DB → seed → optional `mockSearch` fixture replaces providers
+- [x] `eval/run.ts`: for each case → fresh temp DB → seed → optional `mockSearch` fixture replaces providers
   → run agent with case `now`/`tz` → wait for background memory writes to finish → collect output, trace, DB state
-- [ ] Deterministic checks from `checks` (searched?, cited?, mustMention, mustNotMention, resolved dates,
+- [x] Deterministic checks from `checks` (searched?, cited?, mustMention, mustNotMention, resolved dates,
   verify table, recallRules, memoryInjected, claimState)
-- [ ] `eval/judge.ts`: small model scores the rubric 1–5 with a reason (structured output)
-- [ ] Write `eval/results.md` (table: case, pass/fail per check, judge score, latency), uncached runs only (see below)
+- [x] `eval/judge.ts`: small model scores the rubric 1–5 with a reason (structured output)
+- [ ] Write `eval/results.md` (table: case, pass/fail per check, judge score, latency), uncached runs only (see below); transcripts, `--repeat`, quota stop (D60-D62)
 
-- [ ] Real model by default: the runner never installs the dev LLM cache on its own and ignores `DEV_LLM_CACHE` in the env.
+- [x] Real model by default: the runner never installs the dev LLM cache on its own and ignores `DEV_LLM_CACHE` in the env.
   `npm run eval -- --cache` is the only way to turn it on (development iteration only); it prints a visible banner at start
   and in the summary ("CACHED RUN: model answers replayed from llm_cache, not a valid result").
-- [ ] `eval/results.md` is written only from an uncached run; with `--cache` the runner refuses to write it (prints where it
+- [x] `eval/results.md` is written only from an uncached run; with `--cache` the runner refuses to write it (prints where it
   would have written, exits non-zero if `--write-results` is also given) and writes nothing.
 
 **Done when:** `npm run eval` (uncached, real model) finishes on the free tier and results.md is committed; `--cache` shows the

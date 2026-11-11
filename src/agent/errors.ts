@@ -15,6 +15,10 @@ function statusOf(err: unknown): number | undefined {
   return undefined;
 }
 
+/** Exported so the eval runner can tell "quota gone, stop the run" from any other failed turn. */
+export const DAILY_QUOTA_TEXT =
+  "The model provider's daily free quota is used up. It resets tomorrow; try again then, or use another API key or provider.";
+
 /** Maps any thrown value to a short, user-readable sentence. */
 export function friendlyError(err: unknown): string {
   const status = statusOf(err);
@@ -26,7 +30,7 @@ export function friendlyError(err: unknown): string {
   }
   // Checked before the generic 429: waiting a minute will not help when the day's quota is gone.
   if (isDailyQuota(err)) {
-    return "The model provider's daily free quota is used up. It resets tomorrow; try again then, or use another API key or provider.";
+    return DAILY_QUOTA_TEXT;
   }
   if (status === 429) {
     return "The model provider is rate-limiting requests (the free tier has low limits). Wait a minute and try again.";

@@ -453,3 +453,28 @@ vendor's claim is ignored, and "Differs now" on same-day evidence is correct, so
 `errors: [{ verifyStatusContradiction }]`; the answer is never rewritten; eval key `statusMatchesEvidenceLabel` is soft (A2, A17).
 Every cited labelled result is checked, so a row citing a vendor page plus an earlier third-party page can be flagged; that is
 noise accepted for a soft check. The longer-term fix (code computes the status) is listed in DESIGN.md under "With another week".
+
+## Phase 6 — Evals
+
+**D60 — Pass/fail is deterministic; the judge is informational.** A case run passes when every hard check passes, including an
+always-on `answerComplete` (an error or cut-off answer can never pass a case that only forbids things). The small-model judge scores
+the rubric 1-5 with a reason and is shown per run; a score of 2 or less is flagged "review" but never changes the verdict, because a
+judge from the same model family is too noisy to gate on. Soft checks (D58/D59) stay warnings. `cases.json` is validated by a strict
+zod schema, so a mistyped check key fails at load instead of being skipped. `resolvedDates` is an exact set; `recallRules` exact,
+`recallRulesInclude` a subset; `claimState` reads the claim chain whose current row holds the expected value. *Rejected:* gating on
+the judge (flaky), substring-only date checks (would accept an extra, wrong day).
+
+**D61 — A run is isolated, repeatable and stops cleanly.** Each case run gets a fresh SQLite file `eval/.tmp/<id>.db` (gitignored,
+overwritten each run, kept for debugging), the seed, the case's frozen `now`/`tz` (the env `NOW` is ignored), and waits for
+`run.done` (reply, trace and background memory write) before anything is read. Cases run one after another with `--pause-ms`
+(default 4000) between model runs for the free tier. `--repeat N` runs every case N times and reports pass counts like 2/3; the
+judge runs per repetition. A daily-quota error (chat model or judge) throws `QuotaExhausted`: the runner prints where it stopped,
+exits 1 and writes nothing, since a half run would look like failures. Other provider errors fail only that run.
+
+**D62 — What a run may write.** Decided by pure `resolveRunMode` (eval/policy.ts) and enforced in one place (`writeOutputs`).
+Full uncached run: `eval/results.md` and `eval/transcripts/<id>.md`. `--only`: transcripts only (a subset must not replace the full
+table). `--no-write`: nothing. `--cache`: nothing, and `--cache --write-results` is refused before any model call (exit 2). The
+runner overwrites `DEV_LLM_CACHE` and `NOW` from the env (`evalEnvSource`): only the flag turns the cache on, and it prints the
+banner at start and in the summary. The cache lives in its own file `eval/.tmp/llm-cache.db` because per-case DBs are wiped.
+results.md marks each case `mock` (a fixture replaced the providers), `live`, or `live (unused)` (real search, never called).
+Transcripts hold the full answers, queries, sources, check results and judge reasoning, so a reader can check the answers.
