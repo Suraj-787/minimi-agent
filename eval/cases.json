@@ -1,5 +1,5 @@
 {
-  "_note": "All cases run with the seed loaded into a fresh temp DB. now = 2026-11-12 (Thursday) 11:00 IST, so: 3 Nov = Tue (9 days ago), 9 Nov = Mon (3 days ago), 10 Nov = Tue (2 days ago). 'last Tuesday' has two candidates (10 Nov, 3 Nov). Only 3 Nov has a Postgres turn. Check semantics: searched = at least one web_search call; cited = at least one [n] marker that maps to a returned source; resolvedDates = local dates the context builder must output (from the trace). Extra check keys: recallRules = rules that must fire (exact set unless 'recallRulesInclude'); memoryInjected = whether any cross-thread memory entered the prompt; claimState = assertions on the claims table after background writes finish. `mockSearch` replaces both providers with fixed results for deterministic tests (no search quota used). takeawayMatchesTable = the trace has no verifyTakeawayMissing entry (every non-Unchanged row is named after the table). Phase 5 additions: `forgetThreads` (seed thread labels whose memory is forgotten before the run: claims, summaries and recall, as the Memory panel's 'Forget chat'); noRawLinks = the trace has no rawLinks entry (answers cite [n] only); shippedAfterSince = the trace has no shippedNotAfterSince entry (every 'Shipped since <date>' item is dated after <date>). Phase 5 evidence-quality keys: sourceMatchesItem = the trace has no verifySourceMismatch entry (every cited source's URL, title or text names the row's vendor). Soft checks (`softChecks`, Phase 5 D58) never fail a case; the runner prints them as warnings and counts them separately: vendorPageFirst = the trace has no softVendorPageNotFirst entry (price rows cite the vendor's own page first when it states the price); shippedWording = no softShippedWording entry (a 'Shipped since' line says 'shipped' only with the vendor's own announcement/release notes/changelog, otherwise 'reported'). statusMatchesEvidenceLabel (soft, D59) = the trace has no verifyStatusContradiction entry: 'Changed after' / 'Differs now' must not cite a result the tool labelled 'before' the claim date, and 'Already outdated when asked' must not cite one labelled 'after' or 'same day as'.",
+  "_note": "All cases run with the seed loaded into a fresh temp DB. now = 2026-11-12 (Thursday) 11:00 IST, so: 3 Nov = Tue (9 days ago), 9 Nov = Mon (3 days ago), 10 Nov = Tue (2 days ago). 'last Tuesday' has two candidates (10 Nov, 3 Nov). Only 3 Nov has a Postgres turn. Check semantics: searched = at least one web_search call; cited = at least one [n] marker that maps to a returned source; resolvedDates = local dates the context builder must output (from the trace). Extra check keys: recallRules = rules that must fire (exact set unless 'recallRulesInclude'); memoryInjected = whether any cross-thread memory entered the prompt; claimState = assertions on the claims table after background writes finish. `mockSearch` replaces both providers with fixed results for deterministic tests (no search quota used). takeawayMatchesTable = the trace has no verifyTakeawayMissing entry (every non-Unchanged row is named after the table). Phase 5 additions: `forgetThreads` (seed thread labels whose memory is forgotten before the run: claims, summaries and recall, as the Memory panel's 'Forget chat');  shippedAfterSince = the trace has no shippedNotAfterSince entry (every 'Shipped since <date>' item is dated after <date>). Phase 5 evidence-quality keys: sourceMatchesItem = the trace has no verifySourceMismatch entry (every cited source's URL, title or text names the row's vendor). Soft checks (`softChecks`, Phase 5 D58) never fail a case; the runner prints them as warnings and counts them separately: noRawLinks = the trace has no rawLinks entry (answers cite [n] only; a style rule, still recorded in the trace, D64); vendorPageFirst = the trace has no softVendorPageNotFirst entry (price rows cite the vendor's own page first when it states the price); shippedWording = no softShippedWording entry (a 'Shipped since' line says 'shipped' only with the vendor's own announcement/release notes/changelog, otherwise 'reported'). statusMatchesEvidenceLabel (soft, D59) = the trace has no verifyStatusContradiction entry: 'Changed after' / 'Differs now' must not cite a result the tool labelled 'before' the claim date, and 'Already outdated when asked' must not cite one labelled 'after' or 'same day as'.",
   "defaults": {
     "now": "2026-11-12T11:00:00+05:30",
     "timezone": "Asia/Kolkata",
@@ -116,13 +116,13 @@
           "R3"
         ],
         "takeawayMatchesTable": true,
-        "noRawLinks": true,
         "shippedAfterSince": true
       },
       "rubric": "Names all five tools from Monday, re-checks each one's price (none left unverified) AND runs a dated news search since 9 Nov for launches, says plainly when nothing changed, and only says 'Changed after' with a dated announcement. Concise. Ends with 'Shipped since 2026-11-09:' items with dates and [n], or 'Nothing found dated after 2026-11-09.'",
       "softChecks": {
         "vendorPageFirst": true,
-        "shippedWording": true
+        "shippedWording": true,
+        "noRawLinks": true
       }
     },
     {
@@ -170,10 +170,12 @@
         "cited": true,
         "mustMention": [
           "as of"
-        ],
-        "noRawLinks": true
+        ]
       },
-      "rubric": "Gives a specific version with a citation to an authoritative source and an 'as of' date."
+      "rubric": "Gives a specific version with a citation to an authoritative source and an 'as of' date.",
+      "softChecks": {
+        "noRawLinks": true
+      }
     },
     {
       "id": "A8-followup-in-thread",
@@ -326,12 +328,12 @@
         "mustNotMention": [
           "Changed after"
         ],
-        "takeawayMatchesTable": true,
-        "noRawLinks": true
+        "takeawayMatchesTable": true
       },
       "rubric": "Says Supabase Pro is $29 now versus $25 said on 3 Nov, with a citation. The only evidence is a pricing page (dated 11 Nov), which does not date the change, so the status is 'Differs now (timing unknown)', not 'Changed after'. The ledger keeps both values with dates.",
       "softChecks": {
-        "vendorPageFirst": true
+        "vendorPageFirst": true,
+        "noRawLinks": true
       }
     },
     {
@@ -364,12 +366,12 @@
           "R1",
           "R3"
         ],
-        "takeawayMatchesTable": true,
-        "noRawLinks": true
+        "takeawayMatchesTable": true
       },
       "rubric": "The only evidence ($29) is dated 1 Nov, strictly BEFORE the $25 answer on 3 Nov (the tool labels it 'before the Supabase claim date'). Status must be 'Already outdated when asked' (the figure was wrong when given), not a change since 3 Nov. The table shows the evidence date 2026-11-01.",
       "softChecks": {
-        "vendorPageFirst": true
+        "vendorPageFirst": true,
+        "noRawLinks": true
       }
     },
     {
@@ -386,10 +388,12 @@
         "memoryInjected": false,
         "recallRulesInclude": [
           "R1"
-        ],
-        "noRawLinks": true
+        ]
       },
-      "rubric": "The shortlist chat was forgotten, so there is no record of it. The answer says plainly it has no record of Monday's shortlist and asks for the five tool names (or offers to research once they are pasted). It does NOT run a generic CRM search, does NOT list or guess CRM tools as if they were the shortlist, and does not state prices as the shortlist's."
+      "rubric": "The shortlist chat was forgotten, so there is no record of it. The answer says plainly it has no record of Monday's shortlist and asks for the five tool names (or offers to research once they are pasted). It does NOT run a generic CRM search, does NOT list or guess CRM tools as if they were the shortlist, and does not state prices as the shortlist's.",
+      "softChecks": {
+        "noRawLinks": true
+      }
     },
     {
       "id": "A16-dated-result-wins",
@@ -426,10 +430,12 @@
           "R1",
           "R3"
         ],
-        "takeawayMatchesTable": true,
-        "noRawLinks": true
+        "takeawayMatchesTable": true
       },
-      "rubric": "Two results disagree on date: an undated pricing page and a news item dated 1 Nov that states the new $29 price. The dated item decides: 1 Nov is before the 3 Nov answer, so the status is 'Already outdated when asked', never 'Changed after'."
+      "rubric": "Two results disagree on date: an undated pricing page and a news item dated 1 Nov that states the new $29 price. The dated item decides: 1 Nov is before the 3 Nov answer, so the status is 'Already outdated when asked', never 'Changed after'.",
+      "softChecks": {
+        "noRawLinks": true
+      }
     },
     {
       "id": "A17-same-day-evidence",
@@ -463,13 +469,13 @@
           "R3"
         ],
         "takeawayMatchesTable": true,
-        "sourceMatchesItem": true,
-        "noRawLinks": true
+        "sourceMatchesItem": true
       },
       "rubric": "The only evidence ($29) is dated 3 Nov, the SAME day as the $25 answer (labelled 'same day as the Supabase claim date'). A same-day date cannot be ordered against the claim, so the status is 'Differs now (timing unknown)': not 'Already outdated when asked' and not 'Changed after'. The takeaway names Supabase.",
       "softChecks": {
         "vendorPageFirst": true,
-        "statusMatchesEvidenceLabel": true
+        "statusMatchesEvidenceLabel": true,
+        "noRawLinks": true
       }
     },
     {
@@ -499,10 +505,12 @@
           "R3"
         ],
         "takeawayMatchesTable": true,
-        "sourceMatchesItem": true,
-        "noRawLinks": true
+        "sourceMatchesItem": true
       },
-      "rubric": "The only result is a HubSpot blog about generative-AI CRMs, dated the same day as the claim. It says nothing about Pipedrive's price, so a competitor's blog cannot back a Pipedrive row: the Pipedrive row is 'Couldn't verify', with no invented new price and no 'Already outdated' or 'Changed'. The answer may say it found nothing usable for Pipedrive."
+      "rubric": "The only result is a HubSpot blog about generative-AI CRMs, dated the same day as the claim. It says nothing about Pipedrive's price, so a competitor's blog cannot back a Pipedrive row: the Pipedrive row is 'Couldn't verify', with no invented new price and no 'Already outdated' or 'Changed'. The answer may say it found nothing usable for Pipedrive.",
+      "softChecks": {
+        "noRawLinks": true
+      }
     },
     {
       "id": "A19-vendor-page-first",
@@ -539,11 +547,11 @@
           "R3"
         ],
         "takeawayMatchesTable": true,
-        "sourceMatchesItem": true,
-        "noRawLinks": true
+        "sourceMatchesItem": true
       },
       "softChecks": {
-        "vendorPageFirst": true
+        "vendorPageFirst": true,
+        "noRawLinks": true
       },
       "rubric": "Neon is Unchanged at $19. The vendor's own pricing page (undated) states the price and must be cited FIRST in the Source cell; the dated third-party page may follow, only to order the evidence. Evidence date column may say undated for the vendor page."
     },
@@ -568,11 +576,11 @@
           "R1",
           "R3"
         ],
-        "shippedAfterSince": true,
-        "noRawLinks": true
+        "shippedAfterSince": true
       },
       "softChecks": {
-        "shippedWording": true
+        "shippedWording": true,
+        "noRawLinks": true
       },
       "rubric": "The only launch evidence is a dated news recap (an aggregator), not the vendor's own announcement or changelog. Any 'Shipped since 2026-11-09' line for it says 'reported 2026-11-11', never 'shipped 2026-11-11'."
     }

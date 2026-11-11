@@ -478,3 +478,22 @@ runner overwrites `DEV_LLM_CACHE` and `NOW` from the env (`evalEnvSource`): only
 banner at start and in the summary. The cache lives in its own file `eval/.tmp/llm-cache.db` because per-case DBs are wiped.
 results.md marks each case `mock` (a fixture replaced the providers), `live`, or `live (unused)` (real search, never called).
 Transcripts hold the full answers, queries, sources, check results and judge reasoning, so a reader can check the answers.
+
+**D63 — A forced search step can never fail the turn.** The first eval run ended A13 as an error (`AI_ToolChoiceViolationError`) after
+its searches had run: the SDK throws when a step with an enforced `toolChoice` gets a response that ignores it, and gives no way to
+retry the step. The same error is possible on the last step (`toolChoice: none`) when a provider still returns a tool call. So the SDK
+now always runs on `auto` and `agent/stepPolicy.ts` applies the choice itself. `createStepPolicy` (called from `prepareStep`) decides
+each step: the last step is `none`, never forced; forced steps are capped at 3 (price pass, news pass, one top-up) and fewer when
+`maxSteps` is small. `toolChoiceEnforcement` is a model middleware above the retry layer: for a forced step it calls the provider with
+the tool required, and if no tool call comes back it discards that response and retries the step once on `auto`, appending an app
+note that names what was not searched and tells the model to give those items "Couldn't verify". Forcing is then abandoned for the
+rest of the turn (it would only fail again). For the last step it drops any tool call the provider sends and, if no text is left,
+writes a fixed sentence instead of an empty answer. Every case is recorded in the trace as `errors: [{ forcedSearchViolation: [{ step,
+mode, action, owed }] }]`, and `intent.recheck.forcedSteps` counts the forced steps. *Cost:* a forced step is buffered until the
+model starts a tool call (no text is shown on those steps anyway); only the violation path costs a second model call. *Rejected:*
+catching the error and re-running the turn (repeats every search), and `activeTools: []` for the last step (a history with tool calls
+but no tool definitions is rejected by some providers).
+
+**D64 — `noRawLinks` is a soft check.** Raw URLs in an answer break the "[n] only" style rule but not correctness, and a hard failure
+for it hid real results. The trace still records `rawLinks`; eval cases list `noRawLinks` under `softChecks`, where it shows as a
+warning and never fails a case.

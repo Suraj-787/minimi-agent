@@ -110,7 +110,9 @@ Current date-time in the user's timezone, plus weekday and timezone name; resolv
   (at most 3 earlier values).
 - In verify mode the `<context>` block lists `Claims to re-check (N; every one needs a search…): <entity> — <attribute>; …`
   and the hosts of their sources as a domain hint. With at least one claim to re-check, a coverage tracker runs:
-  - the first model step is forced to call `web_search` (`toolChoice`);
+  - the first model step is forced to call `web_search` (`toolChoice`, applied by `agent/stepPolicy.ts`, not by the SDK: a forced step the
+    model ignores is retried once on `auto` with a note naming the unsearched items (answer: Couldn't verify), forcing is then abandoned,
+    and the trace records `forcedSearchViolation`; at most 3 forced steps, and the last step is never forced, D63);
   - each call is topped up in code with `<entity> <attribute>` queries for items no query mentions (cap 6 per call);
     while any item is still unsearched, the next step is forced to search again;
   - when the message has a news cue (shipped / launch / release / news / update), one more forced call runs as the

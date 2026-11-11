@@ -109,7 +109,6 @@ describe("runChecks", () => {
 
   it.each([
     ["takeawayMatchesTable", "verifyTakeawayMissing"],
-    ["noRawLinks", "rawLinks"],
     ["shippedAfterSince", "shippedNotAfterSince"],
     ["sourceMatchesItem", "verifySourceMismatch"],
   ] as const)("%s fails when the trace has a %s entry", (key, errorKey) => {
@@ -119,10 +118,10 @@ describe("runChecks", () => {
   });
 
   it("soft checks are reported separately and never in `hard`", () => {
-    const c = mk({}, { vendorPageFirst: true, shippedWording: true, statusMatchesEvidenceLabel: true });
-    const bad = runChecks(c, obs({ trace: { ...obs().trace, errorKeys: ["softVendorPageNotFirst", "verifyStatusContradiction"] } }));
+    const c = mk({}, { vendorPageFirst: true, shippedWording: true, statusMatchesEvidenceLabel: true, noRawLinks: true });
+    const bad = runChecks(c, obs({ trace: { ...obs().trace, errorKeys: ["softVendorPageNotFirst", "verifyStatusContradiction", "rawLinks"] } }));
     expect(bad.hard.every((h) => h.pass)).toBe(true);
-    expect(bad.soft.filter((s) => !s.pass).map((s) => s.name)).toEqual(["vendorPageFirst", "statusMatchesEvidenceLabel"]);
+    expect(bad.soft.filter((s) => !s.pass).map((s) => s.name)).toEqual(["vendorPageFirst", "noRawLinks", "statusMatchesEvidenceLabel"]);
   });
 
   describe("claimState", () => {

@@ -125,7 +125,6 @@ export function runChecks(c: EvalCase, o: Observed): { hard: CheckResult[]; soft
   }
   if (k.verifyTable) hard.push(result("verifyTable", (parseVerifyTable(answer)?.rows.length ?? 0) > 0, "no verify table with a Status column"));
   if (k.takeawayMatchesTable) hard.push(noTraceError("takeawayMatchesTable", "verifyTakeawayMissing", o));
-  if (k.noRawLinks) hard.push(noTraceError("noRawLinks", "rawLinks", o));
   if (k.shippedAfterSince) hard.push(noTraceError("shippedAfterSince", "shippedNotAfterSince", o));
   if (k.sourceMatchesItem) hard.push(noTraceError("sourceMatchesItem", "verifySourceMismatch", o));
   if (k.claimState) hard.push(...claimStateChecks(k.claimState, o));
@@ -133,6 +132,7 @@ export function runChecks(c: EvalCase, o: Observed): { hard: CheckResult[]; soft
   const s = c.softChecks;
   const soft: CheckResult[] = [];
   if (s.vendorPageFirst) soft.push(noTraceError("vendorPageFirst", "softVendorPageNotFirst", o));
+  if (s.noRawLinks) soft.push(noTraceError("noRawLinks", "rawLinks", o));
   if (s.shippedWording) soft.push(noTraceError("shippedWording", "softShippedWording", o));
   if (s.statusMatchesEvidenceLabel) soft.push(noTraceError("statusMatchesEvidenceLabel", "verifyStatusContradiction", o));
   return { hard, soft };

@@ -20,7 +20,6 @@ export const checksSchema = z
     memoryInjected: z.boolean(),
     verifyTable: bool,
     takeawayMatchesTable: bool,
-    noRawLinks: bool,
     shippedAfterSince: bool,
     sourceMatchesItem: bool,
     claimState: z
@@ -41,7 +40,7 @@ export const checksSchema = z
 export type Checks = z.infer<typeof checksSchema>;
 
 export const softChecksSchema = z
-  .object({ vendorPageFirst: bool, shippedWording: bool, statusMatchesEvidenceLabel: bool })
+  .object({ vendorPageFirst: bool, shippedWording: bool, statusMatchesEvidenceLabel: bool, noRawLinks: bool })
   .partial()
   .strict();
 export type SoftChecks = z.infer<typeof softChecksSchema>;

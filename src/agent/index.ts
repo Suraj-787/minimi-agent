@@ -39,6 +39,7 @@ import { buildContext, type BuiltContext } from "./context";
 import { friendlyError } from "./errors";
 import { detectIntent } from "./intent";
 import { createRecheckTracker } from "./recheck";
+import { createStepPolicy, toolChoiceEnforcement } from "./stepPolicy";
 import { HISTORY_MAX_MESSAGES, selectHistory, toHistoryMessages } from "./history";
 import type { Models } from "./model";
 import { SYSTEM_PROMPT, buildDynamicBlock, withDynamicBlock } from "./prompts";
@@ -142,6 +143,8 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
   }));
 
   const assistantId = randomUUID();
+  // Which steps are forced to search / forbidden to (D63). The SDK itself always runs on `auto`.
+  const stepPolicy = createStepPolicy({ maxSteps });
 
   // 3. Persist exactly once, from whichever path gets there first (normal end, error, or the
   //    safety net below). Memoised so the user message can never end up without an assistant row.
@@ -215,7 +218,17 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
         }),
       });
       // A plain gateway id string cannot be wrapped; env-built models are always objects.
-      const model = typeof models.main === "string" ? models.main : retrying(models.main);
+      const model =
+        typeof models.main === "string"
+          ? models.main
+          : wrapLanguageModel({
+              model: retrying(models.main),
+              middleware: toolChoiceEnforcement({
+                policy: stepPolicy,
+                toolName: "web_search",
+                owed: () => (recheck ? owedWords(recheck.state()) : undefined),
+              }),
+            });
       const result = streamText({
         model,
         instructions: SYSTEM_PROMPT,
@@ -242,14 +255,11 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
           }),
         },
         stopWhen: isStepCount(maxSteps),
-        // On the last allowed step the model may not call the tool, so the turn always ends in text.
-        // In verify mode the first step must search, and so must every later one while an item is still
-        // unsearched or the news pass is owed; then back to auto.
+        // The policy decides per step (D63): the last step answers in text; in verify mode the first step must
+        // search, and so must later ones while an item is unsearched or the news pass is owed, up to a cap and
+        // only until a forced step is ignored. The choice itself is applied in toolChoiceEnforcement, not by the SDK.
         prepareStep: ({ stepNumber }) => {
-          if (stepNumber >= maxSteps - 1) return { toolChoice: "none" };
-          if (recheck && (stepNumber === 0 || recheck.needsSearch())) {
-            return { toolChoice: { type: "tool", toolName: "web_search" } };
-          }
+          stepPolicy.plan(stepNumber, !!recheck && (stepNumber === 0 || recheck.needsSearch()));
           return {};
         },
         // The SDK's own retries are silent, so they are off here; retryMiddleware retries with a visible status.
@@ -326,6 +336,9 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
       const shipped = shippedProblems(finished.text, expected);
       if (shipped.length > 0) errors.push({ shippedNotAfterSince: shipped });
     }
+    // A forced step the model ignored, or a tool call on the last step, never fails the turn (D63); it is recorded here.
+    const steps = stepPolicy.state();
+    if (steps.violations.length > 0) errors.push({ forcedSearchViolation: steps.violations });
     if (searchFailed.length > 0) errors.push({ searchFailed });
     if (searchAllFailed > 0) errors.push({ searchUnavailable: searchAllFailed });
     // The provider that answered the most queries; "(none)" turns have no search at all.
@@ -357,6 +370,7 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
                 recheck: {
                   ...recheck.state(),
                   // Every claim put up for re-checking, in words, for the drawer.
+                  forcedSteps: stepPolicy.state().forcedSteps,
                   claims: ctx.built.recheck.claims.map((c) => ({ entity: c.entity, attribute: c.attribute, said: c.said })),
                 },
               }
@@ -422,6 +436,15 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
 }
 
 type Part = UIMessagePart<UIDataTypes, UITools>;
+
+/** What the tracker still owes, for the note shown to the model when forcing is abandoned. */
+function owedWords(state: { uncovered: string[]; newsSince?: string; newsDone: boolean }): string | undefined {
+  const parts = [
+    state.uncovered.length > 0 ? `these items: ${state.uncovered.join(", ")}` : "",
+    state.newsSince && !state.newsDone ? `the dated news search since ${state.newsSince}` : "",
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" and ") : undefined;
+}
 
 /**
  * What the tracker must cover. The news pass (only when the user asks what shipped / launched) is dated

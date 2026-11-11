@@ -105,6 +105,8 @@ forgetting a claim removes it from the next turn's recall (test); the debug draw
 - [x] `eval/results.md` is written only from an uncached run; with `--cache` the runner refuses to write it (prints where it
   would have written, exits non-zero if `--write-results` is also given) and writes nothing.
 
+- [x] Eval-run fixes (D63, D64): a forced search step never fails the turn (retry once on auto, cap, last step never forced, `forcedSearchViolation` in the trace); `noRawLinks` is a soft check
+
 **Done when:** `npm run eval` (uncached, real model) finishes on the free tier and results.md is committed; `--cache` shows the
 banner and never touches results.md (test).
 
