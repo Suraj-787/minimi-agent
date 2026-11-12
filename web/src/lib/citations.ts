@@ -59,3 +59,33 @@ export function linkCitations(text: string, sources: Source[]): string {
     })
     .join("");
 }
+
+/**
+ * Citation numbers the answer text actually uses, in order of first appearance. Reads [n], [n, m] and
+ * [n][m] (the model writes all three), skips code, and ignores array indexing like a[1].
+ */
+export function citedNumbers(text: string): number[] {
+  const seen: number[] = [];
+  text.split(/(```[\s\S]*?```|`[^`\n]*`)/g).forEach((segment, i) => {
+    if (i % 2 === 1) return; // code
+    for (const m of segment.matchAll(/(?<!\w)\[(\d{1,3}(?:\s*[,;]\s*\d{1,3})*)\](?![(:])/g)) {
+      for (const d of (m[1] ?? "").split(/[,;]/)) {
+        const n = Number(d.trim());
+        if (!seen.includes(n)) seen.push(n);
+      }
+    }
+  });
+  return seen;
+}
+
+/**
+ * The search tool returns more pages than an answer uses. The ones the answer cites come first, in the
+ * order it cites them; the rest (still available, with their numbers) are kept apart. A number cited
+ * with no matching source is dropped here, since linkCitations leaves it as plain text too.
+ */
+export function splitSources(text: string, sources: Source[]): { cited: Source[]; other: Source[] } {
+  const byN = new Map(sources.map((s) => [s.n, s]));
+  const cited = citedNumbers(text).flatMap((n) => (byN.has(n) ? [byN.get(n)!] : []));
+  const used = new Set(cited.map((s) => s.n));
+  return { cited, other: sources.filter((s) => !used.has(s.n)) };
+}

@@ -1,6 +1,7 @@
 import { createElement as h } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { SourcesList } from "../web/src/components/Chat";
 import { ViewSwitch } from "../web/src/components/ViewSwitch";
 import { buildChatBody } from "../web/src/lib/chatRequest";
 
@@ -39,5 +40,32 @@ describe("buildChatBody", () => {
   it("ignores non-text parts and tolerates an empty list", () => {
     expect(buildChatBody(TID, [{ parts: [{ type: "step-start" as never }, { type: "text", text: "hi" }] }], "UTC").message.text).toBe("hi");
     expect(buildChatBody(TID, [], "UTC").message.text).toBe("");
+  });
+});
+
+describe("SourcesList (cited first, the rest collapsed)", () => {
+  const src = (n: number) => ({ n, url: `https://site${n}.com/p`, title: `Title ${n}`, domain: `site${n}.com` });
+  const sources = [1, 2, 3, 4].map(src);
+  const html = (text: string) => renderToStaticMarkup(h(SourcesList, { text, sources }));
+
+  it("lists cited sources outside <details> and the rest inside it, with a count", () => {
+    const out = html("Answer [3] and [1].");
+    const [before = "", inside = ""] = out.split("<details");
+    expect(before.indexOf("Title 3")).toBeLessThan(before.indexOf("Title 1"));
+    expect(before).not.toContain("Title 2");
+    expect(inside).toContain("Other sources searched (2)");
+    expect(inside).toContain("Title 2");
+    expect(inside).toContain("Title 4");
+    expect(inside).not.toContain(" open"); // collapsed by default
+  });
+
+  it("has no <details> when every source is cited, and nothing when there are no sources", () => {
+    expect(html("[1] [2] [3] [4]")).not.toContain("<details");
+    expect(renderToStaticMarkup(h(SourcesList, { text: "x", sources: [] }))).toBe("");
+  });
+
+  it("with no citations, everything sits in the collapsed list", () => {
+    const out = html("Plain answer.");
+    expect(out).toContain("Sources searched (4)");
   });
 });

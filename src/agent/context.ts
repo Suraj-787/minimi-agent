@@ -42,6 +42,8 @@ export interface ContextInput {
   now: Date;
   tz: string;
   plan: RecallPlan;
+  /** The user asked about releases, news or updates (intent.news); in verify mode it adds the "Shipped since" rules. */
+  news?: boolean;
   /** seqs of the messages R0 actually sends; turns whose user message is among them are not recalled twice. */
   windowSeqs: ReadonlySet<number>;
 }
@@ -257,6 +259,7 @@ export function buildContext(db: Db, input: ContextInput): BuiltContext {
     dateLines,
     ...(sinceDate ? { sinceDate } : {}),
     verify: plan.verify,
+    ...(input.news ? { news: true } : {}),
     ...(plan.verify
       ? { recheck: { items: memory.shown.map((s) => `${clip(s.entity, LABEL_MAX)} — ${clip(s.attribute, LABEL_MAX)}`), domains } }
       : {}),

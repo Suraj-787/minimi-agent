@@ -135,6 +135,7 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
     tz,
     at,
     intent: { verify: intent.verify },
+    news: intent.news,
     windowSeqs: new Set(window.map((r) => r.seq)),
   });
   // Verify mode with claims on record must not depend on the model choosing to search (D31), and every
@@ -584,7 +585,7 @@ interface ContextResult {
  */
 function contextOrFallback(
   deps: AgentDeps,
-  input: { message: string; tz: string; at: Date; intent: RecallIntent; windowSeqs: ReadonlySet<number> },
+  input: { message: string; tz: string; at: Date; intent: RecallIntent; news: boolean; windowSeqs: ReadonlySet<number> },
 ): ContextResult {
   const started = performance.now();
   const times = resolveTimeRefs(input.message, input.at, input.tz);
@@ -595,6 +596,7 @@ function contextOrFallback(
       now: input.at,
       tz: input.tz,
       plan,
+      news: input.news,
       windowSeqs: input.windowSeqs,
     });
     return { built, plan, ms: performance.now() - started };

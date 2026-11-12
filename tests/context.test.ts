@@ -18,10 +18,10 @@ beforeEach(() => {
   db = seededDb();
 });
 
-function build(message: string, opts: { verify?: boolean; windowSeqs?: Set<number> } = {}): BuiltContext {
+function build(message: string, opts: { verify?: boolean; news?: boolean; windowSeqs?: Set<number> } = {}): BuiltContext {
   const times = resolveTimeRefs(message, SEED_NOW, IST);
   const plan = recallPolicy({ message, intent: { verify: opts.verify ?? false }, times });
-  return buildContext(db, { message, now: SEED_NOW, tz: IST, plan, windowSeqs: opts.windowSeqs ?? new Set() });
+  return buildContext(db, { message, now: SEED_NOW, tz: IST, plan, news: opts.news ?? false, windowSeqs: opts.windowSeqs ?? new Set() });
 }
 
 /** Just the <memory> … </memory> part of the block. */
@@ -382,3 +382,17 @@ describe("claims at recall time", () => {
   });
 });
 
+
+describe("release list rules in the context block (Phase 7a)", () => {
+  const ask = "What did I ask you on 3 November? Has anything shipped since?";
+
+  it("appear inside <context> when verify mode is on and the user asked about releases", () => {
+    const b = build(ask, { verify: true, news: true }).block;
+    expect(b.slice(0, b.indexOf("</context>"))).toContain("Release list:");
+  });
+
+  it("do not appear for a verify turn that is not about releases, or without verify mode", () => {
+    expect(build("What did I ask you on 3 November? Is it still correct?", { verify: true }).block).not.toContain("Release list");
+    expect(build(ask, { news: true }).block).not.toContain("Release list");
+  });
+});

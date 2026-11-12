@@ -5,10 +5,10 @@ import { existsSync, readFileSync } from "node:fs";
 const problems = [];
 const warnings = [];
 
-// AI SDK v7 declares engines node >= 22, so that is our floor (see DECISIONS D8).
-const [major] = process.versions.node.split(".").map(Number);
-if (major < 22) {
-  problems.push(`Node ${process.versions.node} found; Node >= 22 is required (run: nvm use).`);
+// Node >= 22.12: vite 8 and vitest 5 need it (DECISIONS D75); AI SDK v7 alone needs only 22 (D8).
+const [major, minor] = process.versions.node.split(".").map(Number);
+if (major < 22 || (major === 22 && minor < 12)) {
+  problems.push(`Node ${process.versions.node} found; Node >= 22.12 is required (run: nvm install && nvm use).`);
 }
 
 const env = { ...process.env };

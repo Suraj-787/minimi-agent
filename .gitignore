@@ -1,5 +1,6 @@
 node_modules/
 dist/
+# data/ holds the SQLite file and its -wal/-shm companions; *.db and *.db-* are repeated so a stray DB elsewhere is also caught.
 data/
 *.db
 *.db-*

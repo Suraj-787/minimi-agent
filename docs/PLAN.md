@@ -118,10 +118,11 @@ banner and never touches results.md (test).
 
 ## Phase 7 — Polish + docs (+ stretch)
 - [ ] DESIGN.md final (one page): fill in real numbers from traces/evals
-- [ ] README: setup in 3 steps, keys, scripts, troubleshooting (429s, Node version)
-- [ ] Fresh-clone test in a new folder: `npm install && npm run dev` with only `.env` added
+- [x] README: quick start, every env key, quota, demo, evals, results.md, limitations (D75)
+- [x] Sources cited first, rest folded; release-list rules only when asked; static prompt trimmed (D75)
+- [x] Fresh-clone test in a new folder: `npm run smoke:clone` (D75)
 - [ ] Remove dead code; check `npm run typecheck`, `npm test`
-- [ ] Clean npm audit: raise the Node floor to 22.12 (engines, .nvmrc, check-env, README), update vitest and vite
+- [x] Clean npm audit (D75): raise the Node floor to 22.12 (engines, .nvmrc, check-env, README), update vitest and vite
   (and plugin-react) to the current majors, confirm `npm audit` is clean, and re-run typecheck, tests and the dev server.
 - [ ] *Stretch:* quiet stale-claim hint (SPEC §16)
 

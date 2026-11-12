@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { SYSTEM_PROMPT, buildDynamicBlock, withDynamicBlock } from "../src/agent/prompts";
+import { RELEASE_LIST_RULES, SYSTEM_PROMPT, buildDynamicBlock, withDynamicBlock } from "../src/agent/prompts";
 
 describe("prompts", () => {
   it("system prompt is a constant with no dates or times in it", () => {
@@ -63,8 +63,30 @@ describe("search discipline", () => {
   it("the takeaway must match the table, and launches need a dated source", () => {
     expect(SYSTEM_PROMPT).toContain("name every row whose status is not Unchanged");
     expect(SYSTEM_PROMPT).toContain("Never say nothing changed when any row is not Unchanged.");
-    expect(SYSTEM_PROMPT).toContain('add "Shipped since <date>:" with one line per launch (item, date, [n]), or "Nothing found dated after <date>."');
-    expect(SYSTEM_PROMPT).toContain('Say "introduced" or "launched" only with a source dated after the claim date');
+    expect(RELEASE_LIST_RULES).toContain('add "Shipped since <date>:" with one line per launch (item, date, [n]), or "Nothing found dated after <date>."');
+    expect(RELEASE_LIST_RULES).toContain('Say "introduced" or "launched" only with a source dated after the claim date');
+  });
+});
+
+describe("release list (Phase 7a): only when the user asked about releases, news or updates", () => {
+  const at = new Date("2026-11-12T05:30:00Z");
+  const base = { now: at, tz: "Asia/Kolkata" };
+
+  it("is absent from the static prompt, so the prompt stays byte-identical on every call", () => {
+    expect(SYSTEM_PROMPT).not.toContain("Shipped since");
+    expect(SYSTEM_PROMPT).not.toContain("Release list");
+  });
+
+  it("is in <context> only in verify mode and only when the user asked about releases", () => {
+    const inContext = (b: string) => b.slice(0, b.indexOf("</context>"));
+    expect(inContext(buildDynamicBlock({ ...base, verify: true, news: true }))).toContain(RELEASE_LIST_RULES);
+    expect(buildDynamicBlock({ ...base, verify: true })).not.toContain("Shipped since");
+    expect(buildDynamicBlock({ ...base, verify: true, news: false })).not.toContain("Release list");
+    expect(buildDynamicBlock({ ...base, news: true })).not.toContain("Release list"); // news without verify mode
+  });
+
+  it("carries a fictional example", () => {
+    expect(RELEASE_LIST_RULES).toContain('Example (fictional): "Shipped since 3 Nov:"');
   });
 });
 
@@ -76,8 +98,8 @@ describe("Phase 5 browser-test rules", () => {
   });
 
   it('"Shipped since" lists only items dated after the date; an ambiguous weekday is stated or asked', () => {
-    expect(SYSTEM_PROMPT).toContain("list an item only if its own source date is after <date>");
-    expect(SYSTEM_PROMPT).toContain("If <date> comes from an ambiguous weekday, say which date you assumed, or ask.");
+    expect(RELEASE_LIST_RULES).toContain("List an item only if its own source date is after <date>");
+    expect(RELEASE_LIST_RULES).toContain("If <date> comes from an ambiguous weekday, say which date you assumed, or ask.");
     expect(SYSTEM_PROMPT).toContain("state the date you assumed in your first line, or ask which one the user meant");
   });
 
@@ -120,18 +142,17 @@ describe("source order and shipped wording (D58)", () => {
   });
 
   it('"Shipped since" says "reported <date>" unless the date is from the vendor\'s own announcement, notes or changelog', () => {
-    expect(SYSTEM_PROMPT).toContain('write "reported <date>" unless the date comes from the vendor\'s own announcement, release notes or changelog');
-    expect(SYSTEM_PROMPT).toContain('Never write "shipped <date>" for a news recap, a blog roundup or an aggregator');
+    expect(RELEASE_LIST_RULES).toContain('Write "reported <date>" unless the date comes from the vendor\'s own announcement, release notes or changelog');
+    expect(RELEASE_LIST_RULES).toContain('never for a news recap, a blog roundup or an aggregator');
   });
 
-  it("the earlier Shipped-since wording is unchanged and the prompt stays free of dates and times", () => {
-    expect(SYSTEM_PROMPT).toContain('add "Shipped since <date>:" with one line per launch (item, date, [n]), or "Nothing found dated after <date>."');
+  it("the Shipped-since wording moved unchanged to the release block; the static prompt stays free of dates and times", () => {
     expect(SYSTEM_PROMPT).not.toMatch(/\b20\d{2}\b/);
     expect(SYSTEM_PROMPT).not.toMatch(/\d{1,2}:\d{2}/);
   });
 
   it("D71: a vendor pricing page's date is not the change date; the exact Supabase example is in the prompt", () => {
-    expect(SYSTEM_PROMPT).toContain("A vendor pricing or product page's date is the page's date, not the change date");
+    expect(SYSTEM_PROMPT).toContain("A page date alone never justifies Changed.");
     expect(SYSTEM_PROMPT).toContain(
       "Example: ExampleDB Pro $10 → $12 from exampledb.com/pricing dated 11 Nov, with the claim dated 3 Nov → Differs now (timing unknown).",
     );
@@ -171,6 +192,20 @@ describe("the static prompt shares no vendor or price with the eval set", () => 
   it("no price string from the eval files", () => {
     const found = prices.filter((price) => new RegExp(`${price.replace(/[$.]/g, "\\$&")}(?![\\d.]*\\d)`).test(SYSTEM_PROMPT));
     expect(found).toEqual([]);
+  });
+
+  it.each(vendors)("the release block names no vendor or topic %s either", (name) => {
+    const re = new RegExp(`(?<![\\p{L}\\p{N}])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\p{N}])`, "iu");
+    expect(RELEASE_LIST_RULES).not.toMatch(re);
+  });
+
+  it("the release block has no eval price, and its fictional example is not in the eval files", () => {
+    const found = prices.filter((price) => new RegExp(`${price.replace(/[$.]/g, "\\$&")}(?![\\d.]*\\d)`).test(RELEASE_LIST_RULES));
+    expect(found).toEqual([]);
+    for (const fake of ["ExampleDB", "Acme Analytics"]) {
+      expect(RELEASE_LIST_RULES).toContain(fake);
+      expect(everything.toLowerCase()).not.toContain(fake.toLowerCase());
+    }
   });
 
   it("the fictional examples it uses are not in the eval files either", () => {

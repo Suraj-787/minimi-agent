@@ -87,7 +87,7 @@ summaries and reconciliation run after the stream.
 ## Added during build
 <!-- append new entries here -->
 
-**D8 — Node floor is 22 (`engines >=22`, `.nvmrc` 22), not 20.** AI SDK v7 (`ai@7`, `@ai-sdk/*` 4.x) declares
+**D8 — Node floor is 22 (`engines >=22`, `.nvmrc` 22), not 20.** *(Raised to 22.12 in D75.)* AI SDK v7 (`ai@7`, `@ai-sdk/*` 4.x) declares
 `engines.node >=22`; on Node 20, npm silently resolves the v6 line, which CLAUDE.md rules out. `check-env.mjs`,
 README and `engines` all say 22. Node 22.8 is enough (no 22.12 needed) because the other tools are pinned
 to majors that support it.
@@ -676,3 +676,35 @@ takeaway when every non-Unchanged row has the same status and one sentence says 
 status ("all items couldn't verify"); mixed statuses still need each row named. (7) *Checker bug:* `shippedProblems` strips bold,
 italics and code ticks first; "**Shipped since 2026-11-03:**" had left a body line that was just "**". The A19 vendor-page-first prompt
 rule is unchanged.
+
+## Phase 7a — polish
+
+**D75 — Node 22.12 floor and a clean audit; sources by use; release rules only when asked; a fresh-clone check; a trimmed prompt.**
+(1) *Toolchain:* `engines >=22.12`, `.nvmrc` 22.12, `check-env.mjs` and the README say so; `vite@^8.3.8`, `@vitejs/plugin-react@^6.3.0`,
+`vitest@^5.1.0` (supersedes the pins in D8 and D9, whose "known cost" was the two vitest advisories). `npm audit`: **0 vulnerabilities**,
+nothing left to accept. npm's resolver refused the upgrade against the old lockfile (ERESOLVE), so the lockfile was regenerated; the runtime
+packages that moved with it (`ai`, `@ai-sdk/*`, `hono`, `@hono/node-server`, all patch releases) were pinned back to their previous
+versions, so the production dependency tree is identical to Phase 6 and only the dev toolchain changed. Typecheck, 700+ tests and `vite
+build` pass on Node 22.23. The vite proxy now reads `PORT` (it was hardcoded to 8787, which made the documented `PORT` key break the UI).
+*Rejected:* vite 7 (a stop halfway; plugin-react 6 needs vite 8); leaving the floor at 22 with `--force`d peers.
+(2) *Sources by use:* the UI lists the sources the answer cites first, in the order it cites them, and folds the rest under "Other sources
+searched (n)" ("Sources searched (n)" when nothing is cited). `citedNumbers` reads `[n]`, `[n, m]` and `[n][m]`, skips code, and drops a
+number that has no source. Nothing is removed from the message: all sources stay stored and visible on expand.
+(3) *Release rules in the context, not the prompt:* the "Shipped since" paragraphs (818 characters) left the static system prompt and became
+`RELEASE_LIST_RULES`, added to `<context>` only when verify mode is on **and** `intent.news` matched (ship/launch/release/news/update/
+announce). The static prompt stays byte-identical (rule 10); a verify turn that is not about releases no longer carries them. A
+fictional example (ExampleDB, Acme Analytics) was added, and the no-eval-vocabulary tests now cover the new text too. The wording
+is unchanged apart from the example; the recheck tracker's App note still names the date. *Not verified live:* that Flash-Lite
+still writes the list as well when the rules arrive in `<context>`; eval A4 and A20 are the check, to be run when quota allows.
+(4) *Prompt trim:* the static prompt went from 8,482 to 7,176 characters (about 2,120 to 1,790 tokens at 4 characters per token; 1,494
+to 1,265 words): 818 characters moved as in (3) and 488 were duplicates. Removed: the "every listed item needs its own query"
+sentence (said again in the next line), the "Domains from those claims" and "the app runs a second search" sentences (the dynamic
+block and the App note already say so), "A vendor pricing or product page's date is not the change date" (said in "Dates on results" and by
+"A page date alone never justifies Changed"), "[n] are only for this turn's search results" (said under Citations) and "If there is
+no record of something, say so" (said under Memory and Missing earlier content). Tests that pinned a removed duplicate now pin the
+copy that stays. *Rejected:* shortening the status rules or the examples (they carry behaviour that the evals measured).
+(5) *Fresh-clone check:* `npm run smoke:clone` clones to a temp dir (or copies the working tree with `--worktree`), writes `.env` from
+`.env.example` with dummy keys, runs `npm install`, the env check and `build`, starts server and web on free ports, and checks health,
+database creation, a 400 on a malformed chat body (rejected by zod before any model call) and the proxy. No LLM or search calls.
+(6) `.gitignore` already covered `.env`, the SQLite files (`data/`, `*.db`, `*.db-*`), `eval/.tmp/` and `eval/transcripts-flash/`; a test
+now locks that in with `git check-ignore`.

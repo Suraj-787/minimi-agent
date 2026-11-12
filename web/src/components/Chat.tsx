@@ -3,7 +3,7 @@ import { DefaultChatTransport, type UIMessage } from "ai";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { readableError } from "../lib/api";
 import { buildChatBody } from "../lib/chatRequest";
-import { linkCitations, sourcesOf, type Source } from "../lib/citations";
+import { linkCitations, sourcesOf, splitSources, type Source } from "../lib/citations";
 import { Markdown } from "./Markdown";
 import { WhyDrawer } from "./WhyDrawer";
 
@@ -27,10 +27,9 @@ function textOf(m: UIMessage): string {
   return m.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("");
 }
 
-function SourcesList({ sources }: { sources: Source[] }) {
-  if (sources.length === 0) return null;
+function SourceRows({ sources, className }: { sources: Source[]; className: string }) {
   return (
-    <ol className="mt-3 space-y-1 border-t border-neutral-200 pt-2 text-xs text-neutral-600">
+    <ol className={className}>
       {sources.map((s) => (
         <li key={s.n} className="flex gap-2">
           <span className="w-6 shrink-0 text-right text-neutral-400">[{s.n}]</span>
@@ -44,6 +43,25 @@ function SourcesList({ sources }: { sources: Source[] }) {
         </li>
       ))}
     </ol>
+  );
+}
+
+/** Cited sources first; the other pages that were searched sit in a closed <details> so they do not bury the answer. */
+export function SourcesList({ text, sources }: { text: string; sources: Source[] }) {
+  if (sources.length === 0) return null;
+  const { cited, other } = splitSources(text, sources);
+  return (
+    <div className="mt-3 border-t border-neutral-200 pt-2 text-xs text-neutral-600">
+      {cited.length > 0 && <SourceRows sources={cited} className="space-y-1" />}
+      {other.length > 0 && (
+        <details className={cited.length > 0 ? "mt-2" : ""}>
+          <summary className="cursor-pointer select-none text-neutral-500 hover:text-neutral-800">
+            {cited.length > 0 ? "Other sources searched" : "Sources searched"} ({other.length})
+          </summary>
+          <SourceRows sources={other} className="mt-1 space-y-1" />
+        </details>
+      )}
+    </div>
   );
 }
 
@@ -115,7 +133,7 @@ export function Chat({ threadId, initialMessages, onTurnEnd }: Props) {
             ) : (
               <div key={m.id} className="max-w-[95%]">
                 <Markdown text={linkCitations(text, sources)} />
-                <SourcesList sources={sources} />
+                <SourcesList text={text} sources={sources} />
                 {!(busy && m === last) && (
                   <button onClick={() => setWhyTurn(m.id)} className="mt-1 text-xs text-neutral-400 hover:text-neutral-700">
                     why?
