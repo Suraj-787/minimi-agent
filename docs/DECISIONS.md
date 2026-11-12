@@ -742,3 +742,28 @@ second stall is final and reads "The model took too long to start answering." On
 (the existing rule: replaying text the user already saw is worse). It was not invasive: one middleware, no change to the agent loop. 60 s
 is above the ~48 s the answer step took at the provider's default thinking (see MAIN_THINKING_ANSWER in .env.example), so a slow but working call is not cut; A13 run 2's
 168 s stall would have cost 60 s plus one retry. Tests use a few milliseconds and fake streams that honour the abort signal.
+
+**D77 — Code decides which statuses are possible (allowed-status lines in the closing message).** Evidence: after D76 restored the
+status sentences, every completed A13 answer (2 of 2, and the 4 before) still wrote "Changed after 2026-11-03" for Supabase from
+`supabase.com/pricing` dated 11 Nov. Prose rules do not hold on Flash-Lite, so the closing message (the step that writes every verify
+answer, D69) now carries one code-written line per recalled item: `Allowed statuses for <item>: …`, computed by `allowedFor`
+(`answerChecks.ts`) from the results the tracker attributed to that item (D74) whose URL or title names its vendor (a page the job
+merely found for the item, such as a HubSpot blog for Pipedrive, is not evidence). Three cases: (1) *no such result:* Couldn't verify
+only, "Then → Now shows —". (2) *only the vendor's own pricing or product pages* (host names the vendor, path `/pricing`, `/prices`,
+`/plans` or `/product(s)`, the existing `isVendorPricingPage`) *or undated pages:* Unchanged, Differs now (timing unknown), Couldn't
+verify; never Changed after, because a pricing page's date is not a change date. (3) *at least one dated source that is not the vendor's
+pricing page* (news, changelog, blog): all five, following the date labels. An undated news mention does not unlock case 3, since
+Changed after needs a dated source; this is how I read "dated source" in the brief.
+**One deliberate deviation from the brief:** in case 2, Already outdated when asked stays allowed when a vendor pricing page is dated
+strictly *before* the claim date (`earlierPage`). Eval A14's only evidence is `supabase.com/pricing` dated 1 Nov against a 3 Nov claim and
+it requires Already outdated (D54: the earlier figure was already wrong when given); forbidding it would break A14 and contradict the
+prose rule that stays in the prompt ("a row with such evidence is always this status"). A page dated after the claim, the same day (A17),
+or undated never unlocks it, so the observed A13 failure (a page dated after the claim) stays blocked. To follow the brief literally,
+drop `earlierPage` in `allowedFor` and accept that A14 then needs a different fixture.
+The lines are app text, appended after the `</search_results>` wrapper (results stay inside it, escaped; the entity is escaped too), and
+the closing retry (`freshPrompt`) carries the same lines. The global prose rules and the existing soft checks are unchanged. New trace entry
+`verifyStatusNotAllowed` (`{item, status, allowed}`), recorded when the answer's status is not in the item's allowed set, shown in the
+why? drawer as "Status the evidence didn't allow"; like the other checks it never rewrites the answer, and it is not an eval check yet.
+*Not verified live:* that Flash-Lite obeys the line; the A13 rerun is the test. If it still writes a disallowed status, the next step is
+to rewrite that cell in code, which is why the entry records the allowed set. *Rejected:* a hard rewrite now (the user would see a status
+the model did not write); putting the lines in the static prompt (they are per turn, rule 10).

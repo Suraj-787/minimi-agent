@@ -114,8 +114,9 @@ results (for poisoned pages, same-day evidence, wrong-vendor sources); `live` ca
 ## Known limitations
 - **Verify turns are slow.** Two forced search steps plus the answer: the first token took 14-29 s on the verify cases in
   `results.md`, against 1-8 s for most other turns. The status line shows progress while it works.
-- **The model picks each row's status; code only checks it.** Mismatches are flagged in the trace but the answer is not rewritten.
-  DESIGN.md describes the fix (code-assigned verdicts).
+- **The model picks each row's status, within limits code sets.** The closing step lists which statuses each item's evidence allows
+  (for example no "Changed after" from a pricing page's date). A status outside the list is flagged in the trace, not rewritten.
+  DESIGN.md describes the full fix (code-assigned verdicts).
 - **Memory is small on purpose:** at most 5 recalled turns, 12 claims and 4,000 characters per prompt. A long thread with more
   claims is re-checked in part.
 - **Claims come from the final answer and its cited URLs**, extracted by a small model. A claim it misses is never re-checked.

@@ -45,6 +45,8 @@ export interface RecheckTracker {
    * own item first when several are named), else the item of the job that found it, else one its query mentions.
    */
   itemForResult(r: { url: string; title: string; query: string; item?: string }): RecheckItem | undefined;
+  /** The recalled items the tracker covers, one per vendor (several claims about one vendor are merged). */
+  items(): readonly RecheckItem[];
   state(): { items: number; uncovered: string[]; newsSince?: string; newsDone: boolean; retried: string[] };
 }
 
@@ -157,6 +159,7 @@ export function createRecheckTracker(input: { items: readonly RecheckItem[]; new
       return `App note: every item has been searched. ${stop} Write the answer now.`;
     },
     needsSearch: () => uncovered().length > 0 || !newsDone,
+    items: () => items,
     itemForResult(r) {
       const own = byEntity(r.item);
       const named = items.filter((i) => names(i, r));

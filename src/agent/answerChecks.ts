@@ -1,7 +1,7 @@
 // Deterministic checks on a finished answer. They only RECORD problems in the trace (like takeawayGaps, D44):
 // an answer is never rewritten after it has streamed, but evals and the "why?" drawer can see the failure.
 
-import type { VerifyTable } from "../memory/verifyTable";
+import type { VerifyStatus, VerifyTable } from "../memory/verifyTable";
 
 const pad = (n: number): string => String(n).padStart(2, "0");
 
@@ -120,6 +120,10 @@ export interface ResultText {
   snippet: string;
   /** Set only for a dated result found for a recalled claim; what the model saw as "(before the X claim date …)". */
   label?: EvidenceLabel;
+  /** Verify mode: the recalled item the tracker attributed the page to (D74), dated or not. */
+  item?: string;
+  /** YYYY-MM-DD the provider gave for the page, when it gave one. */
+  publishedDate?: string;
 }
 
 export interface SourceMismatch {
@@ -355,6 +359,94 @@ export function statusContradictions(table: VerifyTable, results: ReadonlyMap<nu
       const bad = row.status === "outdated" ? label.side !== "before" : label.side === "before";
       if (bad) out.push({ item: row.item, status: row.status, n, label: label.side });
     }
+  }
+  return out;
+}
+
+// ── code-derived status constraint (D77): which statuses the evidence makes possible ──
+
+/** What the results found for one item can support (D77). */
+export type EvidenceKind =
+  /** No result names the item's vendor. */
+  | "none"
+  /** Only the vendor's own pricing / product pages, or undated pages: a page's date is not a change date. */
+  | "pages"
+  /** At least one dated source that is not the vendor's pricing page (news, changelog, blog). */
+  | "dated";
+
+const itemToken = (item: string): string => norm(item).trim().split(" ")[0] ?? "";
+
+/** What the results attributed to `entity` (D74) and naming its vendor in the URL or title can support. */
+export function evidenceKind(entity: string, results: Iterable<ResultText>): EvidenceKind {
+  const token = itemToken(entity);
+  // URL and title only, as the tracker's own attribution does: a body mention is not a page about the vendor (D55).
+  const own = [...results].filter(
+    (r) => r.item !== undefined && itemToken(r.item) === token && sourceMentionsVendor(entity, { url: r.url, title: r.title, snippet: "" }),
+  );
+  if (own.length === 0) return "none";
+  return own.some((r) => r.publishedDate !== undefined && !isVendorPricingPage(entity, r.url)) ? "dated" : "pages";
+}
+
+const ALLOWED_STATUSES: Record<EvidenceKind, readonly VerifyStatus[]> = {
+  none: ["unverified"],
+  // "Changed after" needs a source that reports a change, and a pricing page's date is the page's date, not a change date.
+  pages: ["unchanged", "differs", "unverified"],
+  dated: ["unchanged", "differs", "changed", "outdated", "unverified"],
+};
+
+export interface Allowed {
+  kind: EvidenceKind;
+  statuses: readonly VerifyStatus[];
+  /** True when a vendor pricing page dated strictly before the claim date makes Already outdated possible (see allowedFor). */
+  earlierPage: boolean;
+}
+
+/**
+ * The statuses the evidence for `entity` allows (D77). One exception to "a pricing page's date is not a change date": a
+ * vendor pricing or product page dated strictly BEFORE the claim date orders the evidence (the earlier figure was already
+ * wrong when given; D54, eval A14), so Already outdated stays possible next to it. A page dated after the claim, or the
+ * same day, or undated, never unlocks it, and none of them unlocks Changed after.
+ */
+export function allowedFor(entity: string, said: string | undefined, results: Iterable<ResultText>): Allowed {
+  const all = [...results];
+  const kind = evidenceKind(entity, all);
+  const earlierPage =
+    kind === "pages" &&
+    said !== undefined &&
+    all.some(
+      (r) =>
+        r.item !== undefined &&
+        itemToken(r.item) === itemToken(entity) &&
+        r.publishedDate !== undefined &&
+        r.publishedDate < said &&
+        isVendorPricingPage(entity, r.url),
+    );
+  const statuses = earlierPage ? ([...ALLOWED_STATUSES.pages.slice(0, 2), "outdated", "unverified"] as VerifyStatus[]) : ALLOWED_STATUSES[kind];
+  return { kind, statuses, earlierPage };
+}
+
+export interface StatusNotAllowed {
+  item: string;
+  status: VerifyStatus;
+  allowed: readonly VerifyStatus[];
+}
+
+/**
+ * Rows whose status the evidence did not allow (D77): what the closing step's "Allowed statuses" lines said, checked
+ * against the answer. Rows that match no recalled item are skipped. Recorded in the trace (`verifyStatusNotAllowed`);
+ * the answer is never rewritten.
+ */
+export function statusesNotAllowed(
+  table: VerifyTable,
+  items: ReadonlyArray<{ entity: string; said?: string }>,
+  results: ReadonlyMap<number, ResultText>,
+): StatusNotAllowed[] {
+  const out: StatusNotAllowed[] = [];
+  for (const row of table.rows) {
+    const item = items.find((i) => itemToken(i.entity) === itemToken(row.item));
+    if (!item) continue;
+    const { statuses: allowed } = allowedFor(item.entity, item.said, results.values());
+    if (!allowed.includes(row.status)) out.push({ item: row.item, status: row.status, allowed });
   }
   return out;
 }

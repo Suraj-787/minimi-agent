@@ -33,6 +33,7 @@ import {
   shippedWordingProblems,
   sourceMismatches,
   statusContradictions,
+  statusesNotAllowed,
   vendorPageFirstProblems,
   type ResultText,
 } from "./answerChecks";
@@ -41,7 +42,7 @@ import { describeError, friendlyError } from "./errors";
 import { detectIntent } from "./intent";
 import { createRecheckTracker } from "./recheck";
 import { createStepPolicy, NO_ANSWER_TEXT, toolChoiceEnforcement, type CallRecord, type StepMode } from "./stepPolicy";
-import type { SearchRun } from "./closing";
+import { allowedStatusLines, type SearchRun } from "./closing";
 import type { StepKind } from "./thinking";
 import { HISTORY_MAX_MESSAGES, selectHistory, toHistoryMessages } from "./history";
 import type { Models } from "./model";
@@ -263,6 +264,8 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
                 toolName: "web_search",
                 owed: () => (recheck ? owedWords(recheck.state()) : undefined),
                 searches: () => searchRuns,
+                // Verify mode: which statuses each item's evidence allows, as code text in the closing message (D77).
+                ...(recheck ? { allowedStatuses: () => allowedStatusLines(recheck.items(), resultsByN) } : {}),
                 ...(models.mainThinking ? { thinking: models.mainThinking } : {}),
                 onCall: (c) => {
                   if (c.resolvedModelId) resolvedModel = c.resolvedModelId;
@@ -310,7 +313,14 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
                 const item = recheck?.itemForResult(r);
                 const label =
                   item && r.publishedDate ? { entity: item.entity, side: claimSide(r.publishedDate, item.said) } : undefined;
-                resultsByN.set(r.n, { url: r.url, title: r.title, snippet: r.snippet, ...(label ? { label } : {}) });
+                resultsByN.set(r.n, {
+                  url: r.url,
+                  title: r.title,
+                  snippet: r.snippet,
+                  ...(r.publishedDate ? { publishedDate: r.publishedDate } : {}),
+                  ...(item ? { item: item.entity } : {}),
+                  ...(label ? { label } : {}),
+                });
               }
               if (o.allFailed) searchAllFailed++;
             },
@@ -398,6 +408,9 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
     // The status must agree with the evidence label the model saw (D59). Soft: recorded, never rewritten.
     const contradictions = table ? statusContradictions(table, resultsByN) : [];
     if (contradictions.length > 0) errors.push({ verifyStatusContradiction: contradictions });
+    // A status the evidence did not allow (the closing step's "Allowed statuses" lines, D77). Recorded, never rewritten.
+    const notAllowed = table && recheck ? statusesNotAllowed(table, recheck.items(), resultsByN) : [];
+    if (notAllowed.length > 0) errors.push({ verifyStatusNotAllowed: notAllowed });
     // A Couldn't verify row must not repeat the old value as the Now value (D71). Soft: recorded, never rewritten.
     const nowValues = table ? nowValueOnUnverified(table) : [];
     if (nowValues.length > 0) errors.push({ verifyNowValueOnUnverified: nowValues });

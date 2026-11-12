@@ -283,6 +283,8 @@ export interface EnforcementOptions {
   owed: () => string | undefined;
   /** The searches run so far, as plain text for a no-tools step (D72). */
   searches?: () => readonly SearchRun[];
+  /** Verify mode: "Allowed statuses for <item>: …" lines for the closing message, computed from the results so far (D77). */
+  allowedStatuses?: () => readonly string[];
   /** Thinking effort per kind of step; merged into the provider options of each call. */
   thinking?: MainThinking;
   /** Called once per step when its stream has ended. Feeds the trace's per-step timing. */
@@ -386,11 +388,12 @@ async function call(
     // there (found by A13, D72). What actually stops the calls: no tool-call or tool-result part left in the messages.
     const runs = o.searches?.() ?? [];
     const closed = (prompt: typeof params.prompt): typeof params => ({ ...params, prompt, tools: undefined, toolChoice: { type: "none" } });
-    const first = await send("closed", closed(cleanPrompt(params.prompt, runs)));
+    const allowed = o.allowedStatuses?.() ?? [];
+    const first = await send("closed", closed(cleanPrompt(params.prompt, runs, allowed)));
     return {
       ...first,
       // The retry is a fresh call: system prompt, the question with the dynamic block, the plain-text results, nothing else.
-      stream: closedStream(o, step, stats, first, () => send("closed-retry", closed(freshPrompt(params.prompt, runs)))),
+      stream: closedStream(o, step, stats, first, () => send("closed-retry", closed(freshPrompt(params.prompt, runs, allowed)))),
     };
   }
 

@@ -24,6 +24,7 @@ const badge: Record<string, string> = {
 // or value looks wrong; the key is the trace `errors` entry, the label is plain words.
 const CHECK_LABELS: Record<string, string> = {
   verifyStatusContradiction: "Status doesn't fit the evidence",
+  verifyStatusNotAllowed: "Status the evidence didn't allow",
   verifyNowValueOnUnverified: "Couldn't verify row shows a Now value",
   verifySourceMismatch: "Source isn't about the item",
   shippedNotAfterSince: "Shipped-since item not dated after the since date",
@@ -32,7 +33,7 @@ const CHECK_LABELS: Record<string, string> = {
   softShippedWording: "'shipped' without a vendor source",
 };
 
-function checkNotes(errors: unknown[]): { key: string; label: string; items: string[] }[] {
+export function checkNotes(errors: unknown[]): { key: string; label: string; items: string[] }[] {
   const out: { key: string; label: string; items: string[] }[] = [];
   for (const e of errors) {
     if (!e || typeof e !== "object") continue;
@@ -41,8 +42,14 @@ function checkNotes(errors: unknown[]): { key: string; label: string; items: str
       if (!label || !Array.isArray(value)) continue;
       const items = value.map((v) => {
         if (typeof v === "string") return v;
-        const r = (v ?? {}) as { item?: unknown; status?: unknown; reason?: unknown; now?: unknown; line?: unknown };
-        const parts = [r.item ?? r.line, r.status, r.reason === "vendor-pricing-page-only" ? "cites only the vendor's pricing page" : r.reason, r.now !== undefined ? `Now = ${String(r.now)}` : undefined];
+        const r = (v ?? {}) as { item?: unknown; status?: unknown; reason?: unknown; now?: unknown; line?: unknown; allowed?: unknown };
+        const parts = [
+          r.item ?? r.line,
+          r.status,
+          r.reason === "vendor-pricing-page-only" ? "cites only the vendor's pricing page" : r.reason,
+          r.now !== undefined ? `Now = ${String(r.now)}` : undefined,
+          Array.isArray(r.allowed) ? `allowed: ${r.allowed.map(String).join(", ")}` : undefined,
+        ];
         return parts.filter((p) => p !== undefined && p !== "").map(String).join(" · ");
       });
       out.push({ key, label, items });
