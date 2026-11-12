@@ -1,7 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { escapeText, escapeUrl } from "../../lib/escape";
-import type { Search, SearchOutcome, TurnCounter } from "../../search/index";
+import { RESERVE_PER_ITEM, type Search, type SearchInput, type SearchOutcome, type TurnCounter } from "../../search/index";
 import type { RecheckTracker } from "../recheck";
 
 // The .describe() texts are the model's only guidance on HOW to call the tool, so they carry the
@@ -71,22 +71,44 @@ export function evidenceDate(publishedDate: string | undefined, ref?: DateRef): 
   return `published ${publishedDate} (${side} the ${escapeText(ref.entity)} claim date ${ref.date})`;
 }
 
+/** A verify-mode call with its targeted retry never shows the model more than this many results (D74). */
+export const MAX_RESULTS_WITH_RETRY = 16;
+
+/** The first call's results plus the retry's new ones; jobs, sources and failures from both. */
+export function combineOutcomes(a: SearchOutcome, b: SearchOutcome): SearchOutcome {
+  const have = new Set(a.results.map((r) => r.n));
+  return {
+    results: [...a.results, ...b.results.filter((r) => !have.has(r.n))],
+    sources: [...a.sources, ...b.sources],
+    failed: [...a.failed, ...b.failed],
+    allFailed: a.allFailed && b.allFailed,
+    jobs: [...(a.jobs ?? []), ...(b.jobs ?? [])],
+  };
+}
+
+export type ClaimFor = (r: SearchOutcome["results"][number]) => { entity: string; said: string } | undefined;
+
+/** What code tells the model about a result's date (the same text formatResults prints), for the trace too. */
+export function labelFor(r: SearchOutcome["results"][number], opts: { since?: string; claimFor?: ClaimFor } = {}): string {
+  const claim = opts.claimFor?.(r);
+  const ref: DateRef | undefined = claim
+    ? { kind: "claim", entity: claim.entity, date: claim.said }
+    : opts.since
+      ? { kind: "since", date: opts.since }
+      : undefined;
+  return evidenceDate(r.publishedDate, ref);
+}
+
 export function formatResults(
   outcome: Pick<SearchOutcome, "results" | "failed" | "allFailed">,
-  opts: { since?: string; claimFor?: (r: SearchOutcome["results"][number]) => { entity: string; said: string } | undefined } = {},
+  opts: { since?: string; claimFor?: ClaimFor } = {},
 ): string {
   if (outcome.allFailed) {
     // App-authored, so outside the untrusted wrapper. The model must say it could not search.
     return "Search is unavailable right now: every provider failed. Tell the user you could not search, then answer from your own knowledge with an explicit caveat.";
   }
-  const refFor = (r: SearchOutcome["results"][number]): DateRef | undefined => {
-    const claim = opts.claimFor?.(r);
-    if (claim) return { kind: "claim", entity: claim.entity, date: claim.said };
-    return opts.since ? { kind: "since", date: opts.since } : undefined;
-  };
   const blocks = outcome.results.map(
-    (r) =>
-      `[${r.n}] ${escapeText(r.title)} — ${escapeUrl(r.url)} — ${evidenceDate(r.publishedDate, refFor(r))}\n ${escapeText(r.snippet)}`,
+    (r) => `[${r.n}] ${escapeText(r.title)} — ${escapeUrl(r.url)} — ${labelFor(r, opts)}\n ${escapeText(r.snippet)}`,
   );
   const body = blocks.length > 0 ? blocks.join("\n") : "No results.";
   const missed =
@@ -102,8 +124,8 @@ export function createWebSearchTool(deps: {
   emit: ToolEmit;
   /** Verify mode only: tops up uncovered items and rewrites the news call (D37). */
   recheck?: RecheckTracker;
-  /** Every outcome, for the trace (queries, providers, fallbacks). */
-  onOutcome?: (outcome: SearchOutcome) => void;
+  /** Every outcome, for the trace (queries, providers, fallbacks), with the date label each result was shown with. */
+  onOutcome?: (outcome: SearchOutcome, shown: { labels: ReadonlyMap<number, string> }) => void;
   /** The queries that actually ran and the formatted results, without the app note: what a no-tools step is shown (D72). */
   onFormatted?: (run: { queries: string[]; formatted: string }) => void;
 }) {
@@ -113,20 +135,31 @@ export function createWebSearchTool(deps: {
       "Search the web. Use it for anything that changes (prices, versions, news, people's roles, anything current or latest), for anything you are unsure of, and for every request to verify an earlier answer. Do not use it for greetings, small talk, thanks or stable knowledge, and never because an earlier turn in the conversation searched; judge only the latest user message. Results are numbered [n]; cite them as [n].",
     inputSchema: webSearchInput,
     execute: async (raw, { abortSignal }) => {
-      const input = recheck ? recheck.apply(raw) : raw;
-      for (const q of input.queries) emit.status(`Searching: ${q}`);
-      const outcome = await search.run(input, turn, abortSignal);
-      onOutcome?.(outcome);
+      // Verify mode: code builds the jobs (per-item hosts, unrestricted twins, no since on the price pass; D73).
+      const input: SearchInput = recheck ? recheck.apply(raw) : raw;
+      for (const q of input.jobs ? input.jobs.map((j) => j.label) : input.queries) emit.status(`Searching: ${q}`);
+      let outcome = await search.run(input, turn, abortSignal);
+      // One targeted retry, in code, for items no returned page names (D74): the vendor's own host, no since.
+      const retry = recheck?.retryFor(outcome.results);
+      if (retry) {
+        for (const j of retry.jobs ?? []) emit.status(`Searching again: ${j.label}`);
+        const room = Math.max(0, MAX_RESULTS_WITH_RETRY - outcome.results.length);
+        const missing = new Set((retry.jobs ?? []).map((j) => j.item)).size;
+        const again = await search.run({ ...retry, maxResults: Math.min(room, RESERVE_PER_ITEM * missing) }, turn, abortSignal);
+        outcome = combineOutcomes(outcome, again);
+      }
+      // Verify mode: every result is dated against the item it is about (the vendor it names, else its job's item).
+      const opts = {
+        ...(!input.jobs && input.since ? { since: input.since } : {}),
+        ...(recheck ? { claimFor: ((r) => recheck.itemForResult(r)) as ClaimFor } : {}),
+      };
+      onOutcome?.(outcome, { labels: new Map(outcome.results.map((r) => [r.n, labelFor(r, opts)])) });
       for (const r of outcome.results) {
         if (r.isNew) emit.source({ n: r.n, url: r.url, title: r.title, publishedDate: r.publishedDate });
       }
       const note = recheck?.note();
       // The note is app-authored, so it sits outside the untrusted <search_results> wrapper.
-      const formatted = formatResults(outcome, {
-        ...(input.since ? { since: input.since } : {}),
-        // Verify mode: every result is dated against the claim it was searched for, with or without since.
-        ...(recheck ? { claimFor: (r) => recheck.itemFor(r.query, r.title) } : {}),
-      });
+      const formatted = formatResults(outcome, opts);
       onFormatted?.({ queries: input.queries, formatted });
       return `${formatted}${note ? `\n${note}` : ""}`;
     },

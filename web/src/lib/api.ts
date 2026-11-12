@@ -74,6 +74,28 @@ export async function forgetChat(threadId: string): Promise<void> {
 }
 
 /** Shape of GET /api/debug/:turnId; fields are optional where older traces may lack them. */
+/** One search query as the trace keeps it (D74). Older traces have only query/provider/cached. */
+export interface QueryReport {
+  query: string;
+  provider?: string;
+  cached?: boolean;
+  failedProviders?: string[];
+  item?: string;
+  domains?: string[];
+  since?: string;
+  failed?: boolean;
+  empty?: "filter" | "none";
+  results?: {
+    url: string;
+    title: string;
+    publishedDate?: string;
+    fate: "kept" | "duplicate" | "cap";
+    n?: number;
+    duplicateOf?: number;
+    label?: string;
+  }[];
+}
+
 export interface DebugInfo {
   intent: {
     verify?: boolean;
@@ -91,7 +113,7 @@ export interface DebugInfo {
     omittedTurns: number;
     chars: number;
   };
-  queries: { query: string; provider: string; cached: boolean; failedProviders?: string[] }[];
+  queries: QueryReport[];
   provider: string | null;
   timings: { contextMs: number | null; firstStatusMs?: number | null; firstTokenMs: number | null; totalMs: number | null };
   usage: { totalTokens?: number; steps?: number; retries?: number } | null;

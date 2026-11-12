@@ -110,7 +110,7 @@ describe("forced search steps never fail the turn", () => {
       [{ toolCall: { name: "web_search", input: { queries: ["Supabase pricing"] } } }, { text: answer }],
       VERIFY,
     );
-    expect(search.calls).toHaveLength(1);
+    expect(search.calls).toHaveLength(2); // the price pass and its targeted retry for Neon and Render (D74)
     expect(main.doStreamCalls).toHaveLength(2);
     expect(main.doStreamCalls[1]?.toolChoice).toEqual({ type: "none" });
     expect(main.doStreamCalls[1]?.tools ?? []).toEqual([]); // activeTools [] : no tool definitions are sent
@@ -131,7 +131,7 @@ describe("forced search steps never fail the turn", () => {
       ],
       VERIFY,
     );
-    expect(search.calls).toHaveLength(1); // the dropped call never ran
+    expect(search.calls).toHaveLength(2); // the price pass and its in-code retry; the dropped model call never ran
     expect(last).toMatchObject({ status: "complete", text: answer });
     expect(steps[1]).toMatchObject({ mode: "none", droppedToolCalls: ["web_search"], textChars: answer.length });
     expect(errors.some((e) => "forcedSearchViolation" in e)).toBe(true);

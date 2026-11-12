@@ -292,3 +292,37 @@ describe("result provenance (D41)", () => {
     ]);
   });
 });
+
+describe("mergeWithFates: per-item reservation before the cap (D74)", () => {
+  const r = (url: string) => ({ url, title: url, snippet: "" });
+  it("five items, cap 8: without reservation the last items get nothing; with it every item keeps 2 and the cap grows to 10", async () => {
+    const { mergeWithFates, RESERVE_PER_ITEM, MAX_RESULTS_RESERVED } = await import("../src/search/index");
+    // item A has two long lists; B..E one list of 2 each
+    const lists = [
+      { group: "A", results: Array.from({ length: 6 }, (_, i) => r(`https://a.test/own-${i}`)) },
+      { group: "A", results: Array.from({ length: 6 }, (_, i) => r(`https://a.test/any-${i}`)) },
+      ...["B", "C", "D", "E"].map((g) => ({ group: g, results: [r(`https://${g}.test/1`), r(`https://${g}.test/2`)] })),
+    ];
+    const plain = mergeWithFates(lists, { cap: 8 });
+    const plainCount = (g: string) => plain.kept.filter((k) => lists[k.list]!.group === g).length;
+    expect(plainCount("A")).toBeGreaterThan(2);
+    const cap = Math.min(MAX_RESULTS_RESERVED, Math.max(8, RESERVE_PER_ITEM * 5));
+    expect(cap).toBe(10);
+    const fair = mergeWithFates(lists, { cap, reserve: RESERVE_PER_ITEM });
+    for (const g of ["A", "B", "C", "D", "E"]) expect(fair.kept.filter((k) => lists[k.list]!.group === g).length, g).toBe(2);
+    // A's unread pages are marked as over the cap, not lost silently
+    expect(fair.fates[0]!.filter((f) => f.fate === "cap").length).toBe(5);
+  });
+
+  it("duplicates are reported with the index of the kept copy", async () => {
+    const { mergeWithFates } = await import("../src/search/index");
+    const out = mergeWithFates([{ results: [r("https://x.test/a")] }, { results: [r("https://www.x.test/a/"), r("https://x.test/b")] }], { cap: 8 });
+    expect(out.kept.map((k) => k.result.url)).toEqual(["https://x.test/a", "https://x.test/b"]);
+    expect(out.fates[1]![0]).toEqual({ fate: "duplicate", duplicateOf: 0 });
+  });
+
+  it("never more than 12 in a verify call", async () => {
+    const { MAX_RESULTS_RESERVED } = await import("../src/search/index");
+    expect(MAX_RESULTS_RESERVED).toBe(12);
+  });
+});

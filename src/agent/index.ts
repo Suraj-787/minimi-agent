@@ -25,7 +25,7 @@ import { errorFields, log } from "../lib/log";
 import { insertTrace } from "../db/memoryRepo";
 import { parseVerifyTable, takeawayGaps } from "../memory/verifyTable";
 import { writeTurnMemory } from "../memory/write";
-import { createTurnCounter, type Search, type SearchOutcome } from "../search/index";
+import { createTurnCounter, type JobReport, type Search, type SearchOutcome } from "../search/index";
 import {
   nowValueOnUnverified,
   rawLinks,
@@ -105,6 +105,8 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
   // Without it a half answer would be saved as complete and then written into memory (D45).
   let streamError: { error: unknown } | undefined;
   const searchLog: Array<SearchOutcome["sources"][number]> = [];
+  // Per query: filters, provider, each result's fate (kept / duplicate / over the cap) and the label shown (D74).
+  const queryLog: Array<JobReport & { results: Array<JobReport["results"][number] & { label?: string }> }> = [];
   const searchFailed: string[] = [];
   let searchAllFailed = 0;
   // This turn's results by [n], so the trace can check each cited source is about its row's item (D55).
@@ -283,13 +285,24 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
             turn: createTurnCounter(),
             emit,
             onFormatted: (run) => searchRuns.push(run),
-            onOutcome: (o) => {
+            onOutcome: (o, shown) => {
               searchLog.push(...o.sources);
               searchFailed.push(...o.failed);
+              // Per query, for the trace and the drawer (D74): filters, provider, and every result with its fate and the
+              // label the model was shown. A fake search without job reports falls back to the plain sources list.
+              for (const j of o.jobs ?? []) {
+                queryLog.push({
+                  ...j,
+                  results: j.results.map((r) => {
+                    const label = r.n !== undefined ? shown.labels.get(r.n) : undefined;
+                    return label ? { ...r, label } : r;
+                  }),
+                });
+              }
               for (const r of o.results) {
                 if (resultsByN.has(r.n)) continue; // keep the label the model saw first
-                // The date label the model was shown for this result, against the claim it was searched for.
-                const item = recheck?.itemFor(r.query, r.title);
+                // The item the page is about (the vendor it names, else its job's item): the date label it was shown (D74).
+                const item = recheck?.itemForResult(r);
                 const label =
                   item && r.publishedDate ? { entity: item.entity, side: claimSide(r.publishedDate, item.said) } : undefined;
                 resultsByN.set(r.n, { url: r.url, title: r.title, snippet: r.snippet, ...(label ? { label } : {}) });
@@ -444,7 +457,7 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
         memoryIds: { ...ctx.built.trace.memoryIds, omittedTurns: ctx.built.trace.omittedTurns },
         memoryChars: ctx.built.trace.memoryChars,
         contextMs: ctx.ms,
-        queries: searchLog,
+        queries: queryLog.length > 0 ? queryLog : searchLog,
         provider,
         firstStatusMs: firstStatusMs ?? null,
         firstTokenMs: firstTokenMs ?? null,
@@ -540,7 +553,7 @@ function recheckInput(
   built: BuiltContext,
   news: boolean,
 ): Parameters<typeof createRecheckTracker>[0] & { newsSince?: string } {
-  const items = built.recheck.claims.map((c) => ({ entity: c.entity, attribute: c.attribute, said: c.said }));
+  const items = built.recheck.claims.map((c) => ({ entity: c.entity, attribute: c.attribute, said: c.said, ...(c.hosts?.length ? { hosts: c.hosts } : {}) }));
   if (!news) return { items };
   const earliest = built.recheck.claims.map((c) => c.said).sort()[0];
   const newsSince = built.trace.sinceDate ?? earliest;

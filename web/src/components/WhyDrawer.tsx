@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { fetchDebug, type DebugInfo } from "../lib/api";
+import { fetchDebug, type DebugInfo, type QueryReport } from "../lib/api";
 
 const ms = (v: number | null | undefined) => (v === null || v === undefined ? "–" : `${v} ms`);
 
@@ -49,6 +49,44 @@ function checkNotes(errors: unknown[]): { key: string; label: string; items: str
     }
   }
   return out;
+}
+
+const hostOf = (url: string): string => {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+};
+
+/** One query in plain words: what it was for, its filters, who answered, and what happened to each result (D74). */
+function QueryItem({ q }: { q: QueryReport }) {
+  const filters = [
+    q.item ? `for ${q.item}` : "",
+    q.domains?.length ? `only on ${q.domains.join(", ")}` : "any site",
+    q.since ? `published after ${q.since}` : "",
+  ].filter(Boolean);
+  const answered = q.failed
+    ? "no search provider answered"
+    : `${q.provider ?? "?"}${q.cached ? " (cached)" : ""}${q.failedProviders?.length ? `, after ${q.failedProviders.join(", ")} failed` : ""}`;
+  return (
+    <li className="mb-1">
+      <span>{q.query}</span> <span className="text-neutral-500">— {filters.join(", ")} — {answered}</span>
+      {q.empty && (
+        <p className="text-amber-700">{q.empty === "filter" ? "Nothing came back with these filters." : "Nothing came back."}</p>
+      )}
+      {q.results && q.results.length > 0 && (
+        <ul className="pl-4 text-xs">
+          {q.results.map((r, i) => (
+            <li key={i} className={r.fate === "kept" ? "" : "text-neutral-500"}>
+              {r.fate === "kept" ? `[${r.n ?? "?"}] ` : ""}
+              {r.title} — {hostOf(r.url)} — {r.fate === "kept" ? (r.label ?? (r.publishedDate ? `published ${r.publishedDate}` : "undated")) : r.fate === "duplicate" ? `not shown again: same page as [${r.duplicateOf ?? "?"}]` : "not shown: over the result limit"}
+            </li>
+          ))}
+        </ul>
+      )}
+    </li>
+  );
 }
 
 export function WhyDrawer({ turnId, onClose }: { turnId: string; onClose: () => void }) {
@@ -153,11 +191,7 @@ export function WhyDrawer({ turnId, onClose }: { turnId: string; onClose: () => 
             ) : (
               <ul className="list-disc pl-5">
                 {info.queries.map((q, i) => (
-                  <li key={i}>
-                    {q.query} — {q.provider}
-                    {q.cached ? " (cached)" : ""}
-                    {q.failedProviders?.length ? ` · fell back from ${q.failedProviders.join(", ")}` : ""}
-                  </li>
+                  <QueryItem key={i} q={q} />
                 ))}
               </ul>
             )}

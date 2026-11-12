@@ -44,6 +44,14 @@ export function normalizeValue(v: string): string {
     .replace(/[.,;:!]+$/, "");
 }
 
+/** "$19/month", "€8 per seat", "19 USD", "Free": a value that states a price. "Pay for what you use" does not. */
+export function isPriceValue(v: string): boolean {
+  return /[$€£₹¥]\s?\d|\d[\d.,]*\s?(?:usd|eur|gbp|inr|dollars?)\b|\bfree\b/i.test(v);
+}
+
+/** Where a non-price statement about a price goes instead (D74): its own key, next to the price claim. */
+export const NON_PRICE_SUFFIX = " (description)";
+
 /**
  * Deterministic merge by claim key (SPEC §7.3), no model call. One transaction per turn; every
  * operation lands in memory_writes. Duplicate keys within a batch: the last one wins.
@@ -54,7 +62,13 @@ export function reconcileClaims(db: Db, turn: ReconcileTurn, claims: readonly Va
 
   return db.transaction((): ReconcileOp[] => {
     const ops: ReconcileOp[] = [];
-    for (const [key, c] of byKey) {
+    for (const [heldKey, held] of byKey) {
+      // A price claim is never superseded by a value that states no price ("Pay for what you use" replacing
+      // "Launch plan, $19/month", D74): the price stays current and the statement gets its own key.
+      const priceHeld = currentClaimsByKey(db, heldKey)[0];
+      const moved = priceHeld && isPriceValue(priceHeld.value) && !isPriceValue(held.value);
+      const c = moved ? { ...held, attribute: `${held.attribute}${NON_PRICE_SUFFIX}` } : held;
+      const key = moved ? claimKey(c.entity, c.attribute) : heldKey;
       const op = reconcileOne(db, turn, key, c);
       insertMemoryWrite(db, {
         turnId: turn.turnId,
@@ -63,6 +77,7 @@ export function reconcileClaims(db: Db, turn: ReconcileTurn, claims: readonly Va
         detail: {
           key,
           value: c.value,
+          ...(moved ? { reason: "not a price: kept apart from the price claim", priceKey: heldKey } : {}),
           ...(op.op === "supersede" ? { previousIds: op.previousIds } : {}),
           ...(op.op === "rejected" ? { reason: op.reason, validAsOf: c.validAsOf } : {}),
         },

@@ -7,6 +7,7 @@ import {
   nowValueOnUnverified,
   rawLinks,
   shippedProblems,
+  stripEmphasis,
   shippedWordingProblems,
   sourceMentionsVendor,
   sourceMismatches,
@@ -375,5 +376,21 @@ describe("D71: status wording soft checks", () => {
       const t = parseVerifyTable(["| Item | Status |", "|---|---|", "| Neon | Couldn't verify |", "", "x"].join("\n"))!;
       expect(nowValueOnUnverified(t)).toEqual([]);
     });
+  });
+});
+
+describe("shippedProblems strips markdown emphasis first (D74)", () => {
+  it("a bold header no longer leaves a '**' line (the demo turn)", () => {
+    const answer = ["**Shipped since 2026-11-03:**", "- Supabase Expo CLI integration (`eas integrations:supabase:connect`): shipped 2026-11-10 [3]."].join("\n");
+    expect(shippedProblems(answer, "2026-11-03")).toEqual([]);
+  });
+  it("still finds a real problem under a bold header", () => {
+    const answer = ["**Shipped since 2026-11-03:**", "- *Supabase* launch (reported 1 Nov 2026) [3]"].join("\n");
+    expect(shippedProblems(answer, "2026-11-03")).toEqual([{ line: "- Supabase launch (reported 1 Nov 2026) [3]", reason: "not-after-since" }]);
+  });
+  it("stripEmphasis removes bold, italics and code ticks but keeps bullets and plain asterisks", () => {
+    expect(stripEmphasis("**a** *b* `c` __d__")).toBe("a b c d");
+    expect(stripEmphasis("* item one\n* item two")).toBe("* item one\n* item two");
+    expect(stripEmphasis("5 * 3 = 15")).toBe("5 * 3 = 15");
   });
 });

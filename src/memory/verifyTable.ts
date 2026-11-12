@@ -114,11 +114,38 @@ export function statusByClaim(
   return out;
 }
 
+// How a takeaway says a status in words. "couldn't be verified" and "could not verify" both count.
+const STATUS_WORDS: Record<VerifyStatus, RegExp> = {
+  unchanged: /\bunchanged\b/i,
+  // "none of them could be verified" negates through "none", so it counts as the Couldn't verify status too
+  unverified: /\bcould(?:n['’]?t| not)\s+(?:be\s+)?verif|\bunverified\b|\bnot\s+(?:be\s+)?verified\b|\bnone of (?:them|these|those|the)\b[^.]*\bverifi/i,
+  differs: /\bdiffer/i,
+  changed: /\bchanged\b/i,
+  outdated: /\boutdated\b/i,
+};
+const COLLECTIVE = /\b(?:all|every|none of (?:them|these|those|the))\b/i;
+
+/**
+ * True when the takeaway speaks for every row at once (A18: five rows, all Couldn't verify, "all items couldn't
+ * verify"): all non-Unchanged rows share one status, and one sentence says "all" / "every" / "none of them" with that
+ * status. With mixed statuses each row must still be named (D74).
+ */
+export function collectiveTakeaway(table: VerifyTable): boolean {
+  const open = table.rows.filter((r) => r.status !== "unchanged");
+  const statuses = new Set(open.map((r) => r.status));
+  if (open.length === 0 || statuses.size !== 1) return false;
+  const status = [...statuses][0] as VerifyStatus;
+  return table.after
+    .split(/(?<=[.!?])\s+|\n+/)
+    .some((sentence) => COLLECTIVE.test(sentence) && STATUS_WORDS[status].test(sentence));
+}
+
 /**
  * Rows that are not Unchanged but go unmentioned after the table (A4: Salesforce "Differs now" while the
  * closing line said nothing changed). Written to the trace; the eval can assert it is empty.
  */
 export function takeawayGaps(table: VerifyTable): string[] {
+  if (collectiveTakeaway(table)) return [];
   const after = words(table.after);
   return table.rows
     .filter((r) => r.status !== "unchanged")

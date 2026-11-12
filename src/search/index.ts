@@ -16,6 +16,13 @@ import {
 } from "./types";
 
 export const MAX_RESULTS_PER_CALL = 8;
+/** Results reserved for each re-checked item before the cap applies (D74). */
+export const RESERVE_PER_ITEM = 2;
+/**
+ * The cap when items reserve results: 2 per item, at least the usual 8, never more than 12 (6 items x 2). Twelve
+ * snippets of up to ~1,500 characters is about 4-5k tokens per call, the ceiling for a verify-mode search (D74).
+ */
+export const MAX_RESULTS_RESERVED = 12;
 const TTL_SHORT_MS = 60 * 60 * 1000;
 const TTL_LONG_MS = 24 * 60 * 60 * 1000;
 /** A `fresh` query is re-read from the network, except within this window: re-sending after a failed turn must not redo every live crawl (D47). */
@@ -29,6 +36,13 @@ export interface SearchInput {
   since?: string;
   domains?: string[];
   fresh?: boolean;
+  /**
+   * Code-built jobs (verify mode, D73). When present they replace the plan made from queries/domains/since: each
+   * job carries its own filters and the re-checked item it is for, and every item reserves results before the cap.
+   */
+  jobs?: SearchJob[];
+  /** Lower cap for this call (the targeted retry: 2 per missing item), never above the usual cap. */
+  maxResults?: number;
 }
 
 /**
@@ -54,15 +68,40 @@ export function createTurnCounter(): TurnCounter {
   };
 }
 
+/** Why a result the provider returned did or did not reach the model (D74). */
+export type ResultFate = "kept" | "duplicate" | "cap";
+
+/** One job as the trace keeps it: what was asked, with which filters, and the fate of every result it got. */
+export interface JobReport {
+  query: string;
+  /** The re-checked item the job was for, when code built it. */
+  item?: string;
+  domains?: string[];
+  since?: string;
+  provider?: ProviderName;
+  cached?: boolean;
+  failedProviders?: ProviderName[];
+  /** No provider could answer. */
+  failed?: boolean;
+  /** Answered, but with nothing: "filter" when the job had a domain or date filter, "none" when it had none. */
+  empty?: "filter" | "none";
+  results: Array<{ url: string; title: string; publishedDate?: string; fate: ResultFate; n?: number; duplicateOf?: number }>;
+}
+
 export interface SearchOutcome {
-  /** `query`: the query that first found the result, so verify mode can date it against that item's claim (D41). */
-  results: Array<SearchResult & { isNew: boolean; query: string }>;
+  /**
+   * `query`: the query that first found the result, so verify mode can date it against that item's claim (D41).
+   * `item`: the re-checked item of the job that found it, when code built the job (D74).
+   */
+  results: Array<SearchResult & { isNew: boolean; query: string; item?: string }>;
   /** Provider that answered each query (or "cache:<provider>"), for the trace. */
   sources: Array<{ query: string; provider: ProviderName; cached: boolean; failedProviders?: ProviderName[] }>;
   /** Queries no provider could answer. */
   failed: string[];
   /** True only when every query failed: the model should say it could not search. */
   allFailed: boolean;
+  /** Per job: filters, provider, and what happened to each result (kept, duplicate, over the cap). */
+  jobs?: JobReport[];
 }
 
 export interface Search {
@@ -119,26 +158,85 @@ export function ttlMs(q: { query: string; since?: string }): number {
  * can't crowd the others out of the cap; first occurrence of a URL wins.
  */
 export function mergeResults<T extends RawResult>(lists: T[][], cap = MAX_RESULTS_PER_CALL): T[] {
-  const out: T[] = [];
-  const seen = new Set<string>();
-  const longest = Math.max(0, ...lists.map((l) => l.length));
-  for (let i = 0; i < longest && out.length < cap; i++) {
-    for (const list of lists) {
-      const r = list[i];
-      if (!r) continue;
+  return mergeWithFates(lists.map((results) => ({ results })), { cap }).kept.map((k) => k.result);
+}
+
+/**
+ * Merges per-job lists into at most `cap` unique results and says what happened to each input result. With groups
+ * (the re-checked item of each list), every group first gets up to `reserve` results, round-robin over its own lists,
+ * so one item with many hits cannot crowd another out of the cap (D74); the rest of the cap is then filled
+ * round-robin over all lists. First occurrence of a URL wins either way.
+ */
+export function mergeWithFates<T extends RawResult>(
+  lists: Array<{ group?: string; results: T[] }>,
+  opts: { cap: number; reserve?: number },
+): { kept: Array<{ result: T; list: number }>; fates: Array<Array<{ fate: ResultFate; keptIndex?: number; duplicateOf?: number }>> } {
+  const kept: Array<{ result: T; list: number }> = [];
+  const seen = new Map<string, number>();
+  const fates = lists.map((l) => l.results.map(() => ({ fate: "cap" as ResultFate }) as { fate: ResultFate; keptIndex?: number; duplicateOf?: number }));
+  const taken = lists.map(() => 0); // how far each list has been read
+  const take = (li: number): boolean => {
+    const list = lists[li]!.results;
+    while (taken[li]! < list.length) {
+      const i = taken[li]!;
+      taken[li] = i + 1;
+      const r = list[i]!;
       const key = normalizeUrl(r.url);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(r);
-      if (out.length >= cap) break;
+      const prior = seen.get(key);
+      if (prior !== undefined) {
+        fates[li]![i] = { fate: "duplicate", duplicateOf: prior };
+        continue;
+      }
+      seen.set(key, kept.length);
+      fates[li]![i] = { fate: "kept", keptIndex: kept.length };
+      kept.push({ result: r, list: li });
+      return true;
+    }
+    return false;
+  };
+
+  const reserve = opts.reserve ?? 0;
+  if (reserve > 0) {
+    const groups = [...new Set(lists.flatMap((l) => (l.group ? [l.group] : [])))];
+    for (const g of groups) {
+      const mine = lists.flatMap((l, i) => (l.group === g ? [i] : []));
+      let got = 0;
+      let progress = true;
+      while (got < reserve && kept.length < opts.cap && progress) {
+        progress = false;
+        for (const li of mine) {
+          if (got >= reserve || kept.length >= opts.cap) break;
+          if (take(li)) {
+            got++;
+            progress = true;
+          }
+        }
+      }
     }
   }
-  return out;
+  let progress = true;
+  while (kept.length < opts.cap && progress) {
+    progress = false;
+    for (let li = 0; li < lists.length && kept.length < opts.cap; li++) if (take(li)) progress = true;
+  }
+  // Anything still unread is past the cap; duplicates among it are still duplicates.
+  for (let li = 0; li < lists.length; li++) {
+    const list = lists[li]!.results;
+    for (let i = taken[li]!; i < list.length; i++) {
+      const prior = seen.get(normalizeUrl(list[i]!.url));
+      if (prior !== undefined) fates[li]![i] = { fate: "duplicate", duplicateOf: prior };
+    }
+  }
+  return { kept, fates };
 }
 
 export interface SearchJob {
   query: string;
   domains?: string[];
+  /** Published-after filter for this job only (the news pass); price-pass jobs have none (D73). */
+  since?: string;
+  /** The re-checked item this job is for: it reserves results before the cap, and dates results it finds. */
+  item?: string;
   /** How the job appears in the trace and in "no results for" notes. */
   label: string;
 }
@@ -152,6 +250,11 @@ export const UNRESTRICTED_LABEL = " (any site)";
  * or a launch is often reported first somewhere else.
  */
 export function planJobs(input: SearchInput): SearchJob[] {
+  if (input.jobs && input.jobs.length > 0) {
+    // Code-built (verify mode): taken as they are, one per distinct label.
+    const seen = new Set<string>();
+    return input.jobs.filter((j) => (seen.has(j.label) ? false : (seen.add(j.label), true)));
+  }
   const queries = [...new Set(input.queries.map((q) => q.trim()).filter(Boolean))];
   const domains = input.domains && input.domains.length > 0 ? input.domains : undefined;
   const jobs: SearchJob[] = queries.map((query) => ({ query, ...(domains ? { domains } : {}), label: query }));
@@ -240,11 +343,12 @@ export function createSearch(deps: SearchDeps): Search {
     async run(input, turn, signal) {
       const jobs = planJobs(input);
       const settled = await Promise.all(
-        jobs.map((job) =>
-          runQuery(
+        jobs.map((job) => {
+          const since = input.jobs ? job.since : input.since;
+          return runQuery(
             {
               query: job.query,
-              since: input.since,
+              since,
               domains: job.domains,
               fresh: input.fresh,
               // `since` shortens the cache TTL (ttlMs) but must not force Tavily's news topic:
@@ -252,18 +356,48 @@ export function createSearch(deps: SearchDeps): Search {
               newsLike: isNewsLike(job.query),
             },
             signal,
-          ),
-        ),
+          );
+        }),
       );
 
-      const answered = settled.flatMap((s, i) => (s ? [{ ...s, query: jobs[i]?.query ?? "" }] : []));
-      const failed = jobs.filter((_, i) => !settled[i]).map((j) => j.label);
-      // Numbered only after merging, in a deterministic order, from THIS turn's counter.
-      const tagged = answered.map((a) => a.results.map((r) => ({ ...r, query: a.query })));
-      const results = mergeResults(tagged).map((r) => ({
-        ...r,
-        ...turn.numberFor(r.url),
+      const lists = jobs.map((job, i) => ({
+        ...(job.item ? { group: job.item } : {}),
+        results: (settled[i]?.results ?? []).map((r) => ({ ...r, query: job.query, ...(job.item ? { item: job.item } : {}) })),
       }));
+      const grouped = lists.some((l) => l.group);
+      const groups = new Set(lists.flatMap((l) => (l.group ? [l.group] : []))).size;
+      const usual = grouped ? Math.min(MAX_RESULTS_RESERVED, Math.max(MAX_RESULTS_PER_CALL, RESERVE_PER_ITEM * groups)) : MAX_RESULTS_PER_CALL;
+      const cap = input.maxResults !== undefined ? Math.max(0, Math.min(usual, input.maxResults)) : usual;
+      const merged = mergeWithFates(lists, { cap, ...(grouped ? { reserve: RESERVE_PER_ITEM } : {}) });
+      // Numbered only after merging, in a deterministic order, from THIS turn's counter.
+      const results = merged.kept.map(({ result }) => ({ ...result, ...turn.numberFor(result.url) }));
+      const failed = jobs.filter((_, i) => !settled[i]).map((j) => j.label);
+      const reports: JobReport[] = jobs.map((job, i) => {
+        const s = settled[i];
+        const since = input.jobs ? job.since : input.since;
+        const filtered = (job.domains?.length ?? 0) > 0 || !!since;
+        return {
+          query: job.label,
+          ...(job.item ? { item: job.item } : {}),
+          ...(job.domains?.length ? { domains: job.domains } : {}),
+          ...(since ? { since } : {}),
+          ...(s ? { provider: s.provider, cached: s.cached, ...(s.failedProviders.length ? { failedProviders: s.failedProviders } : {}) } : { failed: true }),
+          ...(s && s.results.length === 0 ? { empty: filtered ? ("filter" as const) : ("none" as const) } : {}),
+          results: (lists[i]?.results ?? []).map((r, ri) => {
+            const f = merged.fates[i]![ri]!;
+            const n = f.keptIndex !== undefined ? results[f.keptIndex]?.n : undefined;
+            const dup = f.duplicateOf !== undefined ? results[f.duplicateOf]?.n : undefined;
+            return {
+              url: r.url,
+              title: r.title,
+              ...(r.publishedDate ? { publishedDate: r.publishedDate } : {}),
+              fate: f.fate,
+              ...(n !== undefined ? { n } : {}),
+              ...(dup !== undefined ? { duplicateOf: dup } : {}),
+            };
+          }),
+        };
+      });
       return {
         results,
         sources: jobs.flatMap((job, i) => {
@@ -273,7 +407,8 @@ export function createSearch(deps: SearchDeps): Search {
             : [];
         }),
         failed,
-        allFailed: jobs.length > 0 && answered.length === 0,
+        allFailed: jobs.length > 0 && settled.every((s) => !s),
+        jobs: reports,
       };
     },
   };

@@ -73,8 +73,15 @@ export interface ShippedProblem {
  * "Shipped since <date>:" may list only items whose own date is after <date> (item 2). Reads the lines
  * under that header up to the first blank line or heading. `expectedSince`, when known, must be the header's date.
  */
+/** Bold, italics and code ticks removed: "**Shipped since 3 Nov:**" must read as the header, not leave a "**" line (D74). */
+export function stripEmphasis(text: string): string {
+  return text
+    .replace(/\*\*|__|`/g, "")
+    .replace(/(^|[\s(])\*(?=\S)([^*\n]*?\S)\*(?=[\s).,:;!?]|$)/gm, "$1$2");
+}
+
 export function shippedProblems(answer: string, expectedSince?: string): ShippedProblem[] {
-  const lines = answer.split("\n");
+  const lines = stripEmphasis(answer).split("\n");
   const h = lines.findIndex((l) => /shipped since\b/i.test(l));
   if (h < 0) return [];
   const head = lines[h] as string;

@@ -642,3 +642,37 @@ an infra rerun), stores each turn's `steps` and trace `errors` in the stored res
 *Rejected:* declaring a tool and sending a NONE function-calling mode (the AI SDK removes function tools under `toolChoice: none`, and
 the Google options expose no `toolConfig`). *Not verified live:* that Gemini now answers on the closed step; the first live A13
 repeat is the test, and the new `calls` records will show exactly what was sent if it does not.
+
+## Phase 6 — retrieval in verify mode
+
+**D73 — Code owns the retrieval inputs in verify mode.** In the demo turn "Has any pricing changed since then?" Neon and Render came back
+Couldn't verify, and our own request building was the cause, not the web: the model passed `since: 2026-11-03` to the price check, so
+the provider returned only pages with a publish date after it and dropped the undated pricing pages that state prices; it typed
+`neon.tech` (Neon is on neon.com), and that one union domain list (supabase.com, render.com, neon.tech) was applied to every query; and
+D33's unrestricted twin ran for the first query only. Now the recheck tracker turns each web_search call into explicit jobs, and the
+model's `domains` and `since` are ignored: per re-checked item (up to 6 per call), the model's query for that item (or `<entity>
+<attribute>`), once restricted to the host(s) of that claim's own source URL and once unrestricted; no `since`; `fresh` on. `since`
+is used only on the news pass (one dated, unrestricted query per item, unchanged). Undated results keep the "undated" label. The
+model's queries that name no item are dropped in verify mode. The search client takes these jobs as they are (`SearchInput.jobs`,
+per-job `since` and domains); the plain path for ordinary questions is unchanged. *Cost:* up to 12 provider requests per call instead
+of up to 7, in parallel; cached per job as before.
+
+**D74 — Evidence per item, labels per page, a per-query trace, and four smaller fixes.** (1) *Reservation:* every item reserves 2
+results before the cap (`mergeWithFates`: per item, round-robin over its own jobs, then the rest round-robin over all jobs). The cap is
+2 × items, at least 8 and at most 12; twelve snippets of up to ~1,500 characters is about 4-5k tokens. (2) *Targeted retry:* if no
+returned result's URL or title (aliases included: freshworks.com names Freshsales; a body mention does not count) names an item's vendor,
+code runs one more search in the same tool call for those items: `<entity> <attribute>` on the item's own host (unrestricted when no
+host is stored), no `since`, at most 2 new results per item and 16 results per call in all; once per item per turn; never for the news
+pass. (3) *Labels:* a result is dated against the item whose vendor its URL or title names (its own job's item first when several are
+named), else its job's item, else an item its query mentions; a Supabase page found by the Neon job is dated against the Supabase
+claim. (4) *Trace:* `traces.queries_json` now has one entry per job: query, item, domains, since, provider, cached, failure, `empty:
+"filter" | "none"` when nothing came back, and every result with its fate (`kept` with its [n] and the label the model saw,
+`duplicate` with the [n] it duplicates, or `cap`). The why? drawer shows it in words ("only on neon.com", "Nothing came back with these
+filters", "not shown again: same page as [3]", "not shown: over the result limit"). (5) *Ledger:* a current price claim is never
+superseded by a value that states no price (`isPriceValue`: a currency amount, a currency code or "free"). The price stays current and
+the statement is stored under its own key, `<attribute> (description)`, logged with `reason: "not a price: kept apart from the price
+claim"`; the demo's "Pay for what you use" had replaced Neon's "$19/month". (6) *A18 checker:* `takeawayGaps` accepts a collective
+takeaway when every non-Unchanged row has the same status and one sentence says "all", "every" or "none of them/these/the" with that
+status ("all items couldn't verify"); mixed statuses still need each row named. (7) *Checker bug:* `shippedProblems` strips bold,
+italics and code ticks first; "**Shipped since 2026-11-03:**" had left a body line that was just "**". The A19 vendor-page-first prompt
+rule is unchanged.

@@ -111,6 +111,7 @@ forgetting a claim removes it from the next turn's recall (test); the debug draw
 - [x] Third-run fixes (D69, D70): code closes verify-mode search and every turn ends in a model answer or an error row; A4 checker; extractor attempts; eval infra rerun
 - [x] Status wording (D71): Changed-after rule + Supabase example, Couldn't verify Now = "—", soft checks `verifyStatusContradiction` (vendor pricing page only) and `verifyNowValueOnUnverified`, A13 soft keys
 - [x] Closing step fix (D72): no tool parts on a no-tools step, results as plain wrapped text, fresh closing retry, per-request trace, per-repetition eval DBs
+- [x] Verify-mode retrieval (D73, D74): code-owned per-item hosts + unrestricted twins, no since on the price pass, per-item reservation, targeted retry, per-page labels, per-query trace + drawer; non-price values never supersede a price; collective takeaway; shipped-since emphasis fix
 
 **Done when:** `npm run eval` (uncached, real model) finishes on the free tier and results.md is committed; `--cache` shows the
 banner and never touches results.md (test).

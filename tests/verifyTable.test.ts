@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { nowValue, parseStatus, parseVerifyTable, statusByClaim, takeawayGaps } from "../src/memory/verifyTable";
+import { collectiveTakeaway, nowValue, parseStatus, parseVerifyTable, statusByClaim, takeawayGaps } from "../src/memory/verifyTable";
 
 const A2 = `On 3 Nov you asked about Postgres hosting and Bun.
 
@@ -110,5 +110,41 @@ describe("Then → Now column (D71)", () => {
     expect(t.rows.map((r) => r.now)).toEqual(["—", "$29"]);
     const bare = parseVerifyTable(["| Item | Status |", "|---|---|", "| Neon | Unchanged |", "", "x"].join("\n"))!;
     expect(bare.rows[0]).not.toHaveProperty("now");
+  });
+});
+
+describe("takeawayGaps: a collective takeaway (D74, A18)", () => {
+  const HEAD = ["| Item | Said (date) | Then → Now | Status | Evidence date | Source |", "|---|---|---|---|---|---|"];
+  const t = (rows: string[], after: string) => parseVerifyTable([...HEAD, ...rows, "", after].join("\n"))!;
+  const ALL_UNVERIFIED = ["HubSpot", "Pipedrive", "Salesforce", "Zoho", "Freshsales"].map((v) => `| ${v} | 2026-11-09 | $1 → — | Couldn't verify | — | — |`);
+
+  it.each([
+    "As of 12 November 2026, all items couldn't verify due to a lack of current pricing evidence.",
+    "None of them could be verified as of 12 Nov.",
+    "Every price could not be verified today.",
+    "As of 12 Nov: all five are unverified.",
+  ])("accepts: %s", (after) => {
+    expect(collectiveTakeaway(t(ALL_UNVERIFIED, after))).toBe(true);
+    expect(takeawayGaps(t(ALL_UNVERIFIED, after))).toEqual([]);
+  });
+
+  it("the collective word and the status must be in the same sentence, and the status must be the rows' status", () => {
+    expect(takeawayGaps(t(ALL_UNVERIFIED, "All prices checked. Some couldn't be verified."))).toHaveLength(5);
+    expect(takeawayGaps(t(ALL_UNVERIFIED, "All items differ now."))).toHaveLength(5);
+    expect(takeawayGaps(t(ALL_UNVERIFIED, "Nothing to report."))).toHaveLength(5);
+  });
+
+  it("stays strict for mixed statuses: each non-Unchanged row must be named", () => {
+    const mixed = t(
+      ["| Neon | 2026-11-03 | $19 → — | Couldn't verify | — | — |", "| Supabase | 2026-11-03 | $25 → $29 | Differs now (timing unknown) | 2026-11-11 | [1] |"],
+      "All items couldn't verify or differ now.",
+    );
+    expect(collectiveTakeaway(mixed)).toBe(false);
+    expect(takeawayGaps(mixed)).toEqual(["Neon", "Supabase"]);
+  });
+
+  it("Unchanged rows don't count against a collective line", () => {
+    const tbl = t(["| Neon | 2026-11-03 | $19 → $19 | Unchanged | 2026-11-11 | [1] |", ...ALL_UNVERIFIED.slice(0, 2)], "All the others couldn't be verified.");
+    expect(takeawayGaps(tbl)).toEqual([]);
   });
 });

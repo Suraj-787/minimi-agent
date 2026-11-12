@@ -75,7 +75,9 @@ describe("memory write path, end to end (mocked models and search)", () => {
     // Forced on step 0, auto afterwards.
     expect(main.doStreamCalls[0]?.toolChoice).toEqual({ type: "tool", toolName: "web_search" });
     expect(main.doStreamCalls[1]?.toolChoice).not.toEqual({ type: "tool", toolName: "web_search" });
-    expect(search.calls).toHaveLength(1);
+    // The price pass, then one targeted retry in code for Neon and Render: the fixture has no page naming them (D74).
+    expect(search.calls).toHaveLength(2);
+    expect([...new Set(search.calls[1]?.jobs?.map((j) => j.item))]).toEqual(["Neon", "Render"]);
     const trace = getTrace(db, run.assistantMessageId);
     expect(JSON.parse(trace?.intent_json ?? "{}")).toMatchObject({ verify: true, forcedSearch: true });
     expect(JSON.parse(trace?.recall_rules_json ?? "[]")).toEqual(["R0", "R1", "R2", "R3"]);
@@ -163,12 +165,16 @@ describe("memory write path, end to end (mocked models and search)", () => {
     expect(main.doStreamCalls[1]?.toolChoice).toEqual(forced);
     expect(main.doStreamCalls[2]?.toolChoice).not.toEqual(forced);
 
-    const [price, news] = search.calls;
+    // price pass, its targeted retry (only HubSpot's page came back), then the news pass (D73, D74)
+    const [price, retry, news] = search.calls;
     expect(price?.queries).toHaveLength(5);
     expect(price?.queries.some((q) => q.startsWith("Freshsales"))).toBe(true);
-    expect(price?.domains).toEqual(["hubspot.com", "pipedrive.com"]);
-    expect(news?.since).toBe("2026-11-09");
-    expect(news?.domains).toBeUndefined();
+    // The model's domains (hubspot.com, pipedrive.com for everything) are ignored: each item gets its own host + a twin.
+    expect(price?.jobs?.filter((j) => j.item === "HubSpot Sales Hub").map((j) => j.domains)).toEqual([["hubspot.com"], undefined]);
+    expect(price?.jobs?.filter((j) => j.item === "Freshsales").map((j) => j.domains)).toEqual([["freshworks.com"], undefined]);
+    expect(price?.jobs?.every((j) => j.since === undefined)).toBe(true);
+    expect([...new Set(retry?.jobs?.map((j) => j.item))]).toEqual(["Pipedrive", "Salesforce Sales Cloud", "Zoho CRM", "Freshsales"]);
+    expect(news?.jobs?.every((j) => j.since === "2026-11-09" && j.domains === undefined)).toBe(true);
     expect(news?.queries).toHaveLength(5);
 
     // The model is told what is next, and the news results are labelled against since.

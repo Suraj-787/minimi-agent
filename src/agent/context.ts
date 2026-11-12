@@ -77,6 +77,8 @@ export interface ShownClaim {
   value: string;
   /** Local date the shown value was said. */
   said: string;
+  /** Host of the claim's source ("neon.com"): verify mode restricts that item's search to it (D73). */
+  hosts?: string[];
 }
 
 export interface BuiltContext {
@@ -274,8 +276,24 @@ export function buildContext(db: Db, input: ContextInput): BuiltContext {
       omittedTurns: memory.omitted,
       memoryChars: memory.text.length,
     },
-    recheck: { claims: memory.shown.map(({ source: _s, ...c }) => c), domains },
+    recheck: {
+      claims: memory.shown.map(({ source, ...c }) => {
+        const host = hostOf(source);
+        return host ? { ...c, hosts: [host] } : c;
+      }),
+      domains,
+    },
   };
+}
+
+/** "https://www.neon.com/pricing" → "neon.com"; undefined for a missing or malformed URL. */
+function hostOf(url: string | null): string | undefined {
+  if (!url) return undefined;
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/^www\./, "") || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Hosts of the shown claims' sources: offered to the model as a domain hint for official pages. */
