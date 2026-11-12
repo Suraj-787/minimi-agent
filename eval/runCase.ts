@@ -44,8 +44,10 @@ export interface TurnLog extends TurnObservation {
   totalMs: number | null;
   /** The turn's per-step trace (model/search ms, finish reasons, every request with tool choice and tool calls), D72. */
   steps?: unknown[];
-  /** The trace's `errors` entries (forcedSearchViolation, verify checks...). */
+  /** The trace's `errors` entries (forcedSearchViolation, verify checks, modelError...). */
   traceErrors?: unknown[];
+  /** Model calls the retry layer repeated during this turn (the trace's usage.retries). */
+  retries?: number;
 }
 
 export type JudgeOutcome = Judgement | { error: string };
@@ -71,19 +73,46 @@ export interface RunResult {
   resolved?: { main?: string; small?: string };
 }
 
+/** What infraReasons reads from a turn; the first two are all a test needs. */
+export interface InfraTurn {
+  status: string;
+  answer: string;
+  /** usage.retries from the trace: model calls the retry layer repeated. */
+  retries?: number;
+  /** The trace's `errors` entries; `{ modelError: { name, status? } }` is the error that ended the turn (D76). */
+  traceErrors?: readonly unknown[];
+}
+
+function modelErrorOf(errors: readonly unknown[] | undefined): { name?: unknown; status?: unknown } | undefined {
+  for (const e of errors ?? []) {
+    const m = e && typeof e === "object" ? (e as { modelError?: unknown }).modelError : undefined;
+    if (m && typeof m === "object") return m as { name?: unknown; status?: unknown };
+  }
+  return undefined;
+}
+
 /**
- * Why an attempt counts as an infrastructure failure rather than a wrong answer: a turn that ended on a provider
- * 5xx or rate limit (also mid-stream), or a memory write that errored (timeout, 429...). Pure, for tests.
+ * Why an attempt counts as an infrastructure failure rather than a wrong answer: a turn that ended in an error row after
+ * a provider 5xx or rate limit (also mid-stream), after the retry layer gave up (retries > 0, whatever the final message
+ * said: A18 run 2 showed "Something went wrong" after 3 retries), or with a provider API error / any 5xx recorded in its
+ * trace; or a memory write that errored (timeout, 429...). A turn with no retries and no provider error (a missing API
+ * key, a bug) is not infra. Pure, for tests.
  */
 export function infraReasons(
-  turns: ReadonlyArray<{ status: string; answer: string }>,
+  turns: ReadonlyArray<InfraTurn>,
   writes: ReadonlyArray<{ op: string; detail_json: string | null }>,
 ): string[] {
   const out: string[] = [];
   for (const t of turns) {
     if (t.status !== "error") continue;
-    if (t.answer.includes(SERVER_ERROR_TEXT)) out.push("provider 5xx");
-    else if (t.answer.includes(RATE_LIMIT_TEXT)) out.push("provider rate limit");
+    const failure = modelErrorOf(t.traceErrors);
+    const status = typeof failure?.status === "number" ? failure.status : undefined;
+    if (t.answer.includes(SERVER_ERROR_TEXT) || (status !== undefined && status >= 500)) out.push("provider 5xx");
+    else if (t.answer.includes(RATE_LIMIT_TEXT) || status === 429) out.push("provider rate limit");
+    // A rejected key (401/403) fails the same way on a rerun, so it stays a plain failure.
+    else if (failure?.name === "SlowResponseError") out.push("model stalled (no first chunk)");
+    else if (failure?.name === "AI_APICallError" && status !== 401 && status !== 403) out.push(`provider API error${status !== undefined ? ` (HTTP ${status})` : ""}`);
+    else if ((t.retries ?? 0) > 0) out.push(`provider error after ${t.retries} ${t.retries === 1 ? "retry" : "retries"}`);
   }
   for (const w of writes) {
     if (w.op !== "error") continue;
@@ -196,6 +225,7 @@ export async function runCase(deps: CaseDeps, c: EvalCase, rep: number, attempt 
         totalMs: trace?.total_ms ?? null,
         steps: parseJson<unknown[]>(trace?.steps_json, []),
         traceErrors: parseJson<unknown[]>(trace?.errors_json, []),
+        retries: parseJson<{ retries?: number }>(trace?.usage_json, {}).retries ?? 0,
       });
     }
 

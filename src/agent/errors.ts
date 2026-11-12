@@ -1,5 +1,5 @@
 import { APICallError, RetryError } from "ai";
-import { isDailyQuota } from "../lib/retry";
+import { isDailyQuota, SlowResponseError } from "../lib/retry";
 
 // Provider errors can carry request details, so what reaches the chat is a fixed sentence per
 // failure class, never the raw message (CLAUDE.md: no secrets in logs, traces or the client).
@@ -13,6 +13,16 @@ function statusOf(err: unknown): number | undefined {
     if (err.cause) return statusOf(err.cause);
   }
   return undefined;
+}
+
+/**
+ * What failed, for the trace: the error class and HTTP status, never the message (provider messages can carry request
+ * details). The eval reads it to tell a provider failure from a wrong answer (D76); the user-facing sentence loses that.
+ */
+export function describeError(err: unknown): { name: string; status?: number } {
+  const inner = RetryError.isInstance(err) ? err.lastError : err;
+  const status = statusOf(err);
+  return { name: inner instanceof Error ? inner.name : "unknown", ...(status !== undefined ? { status } : {}) };
 }
 
 /** Exported so the eval runner can tell "quota gone, stop the run" from any other failed turn. */
@@ -41,6 +51,9 @@ export function friendlyError(err: unknown): string {
   }
   if (status !== undefined && status >= 500) {
     return SERVER_ERROR_TEXT;
+  }
+  if (err instanceof SlowResponseError) {
+    return "The model took too long to start answering. Try again in a moment.";
   }
   if (err instanceof Error && err.name === "AI_LoadAPIKeyError") {
     return "No API key is configured for the model provider. Add it to .env and restart the server.";

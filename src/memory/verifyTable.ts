@@ -114,30 +114,33 @@ export function statusByClaim(
   return out;
 }
 
-// How a takeaway says a status in words. "couldn't be verified" and "could not verify" both count.
+// How a takeaway says a status in words. "couldn't be verified", "could not verify" and "unable to verify" all count.
 const STATUS_WORDS: Record<VerifyStatus, RegExp> = {
   unchanged: /\bunchanged\b/i,
-  // "none of them could be verified" negates through "none", so it counts as the Couldn't verify status too
-  unverified: /\bcould(?:n['’]?t| not)\s+(?:be\s+)?verif|\bunverified\b|\bnot\s+(?:be\s+)?verified\b|\bnone of (?:them|these|those|the)\b[^.]*\bverifi/i,
+  // "none could be verified" / "none of them could be verified" negate through "none"
+  unverified: /\bcould(?:n['’]?t| not)\s+(?:be\s+)?verif|\bunable to (?:verify|confirm)\b|\bunverified\b|\bnot\s+(?:be\s+)?verified\b|\bnone\b[^.]*\bverif/i,
   differs: /\bdiffer/i,
   changed: /\bchanged\b/i,
   outdated: /\boutdated\b/i,
 };
-const COLLECTIVE = /\b(?:all|every|none of (?:them|these|those|the))\b/i;
+// "Nothing differs now", "none changed", "did not change": a negated sentence does not state a Differs/Changed/Outdated status.
+const NEGATED = /\b(?:no|not|nothing|never|none|neither|without)\b|n['’]t\b/i;
 
 /**
- * True when the takeaway speaks for every row at once (A18: five rows, all Couldn't verify, "all items couldn't
- * verify"): all non-Unchanged rows share one status, and one sentence says "all" / "every" / "none of them" with that
- * status. With mixed statuses each row must still be named (D74).
+ * True when one sentence speaks for every open row at once. All non-Unchanged rows must share one status (A18: five rows,
+ * all Couldn't verify) and the takeaway must state that status in words; the wording around it does not matter ("all items
+ * couldn't verify", "couldn't verify current pricing for any of the shortlisted CRMs", "none could be verified"). Two or more
+ * open rows are needed: a single row is not a collective, so it is still checked by name. With mixed statuses each row must
+ * still be named (D74, D76).
  */
 export function collectiveTakeaway(table: VerifyTable): boolean {
   const open = table.rows.filter((r) => r.status !== "unchanged");
   const statuses = new Set(open.map((r) => r.status));
-  if (open.length === 0 || statuses.size !== 1) return false;
+  if (open.length < 2 || statuses.size !== 1) return false;
   const status = [...statuses][0] as VerifyStatus;
   return table.after
     .split(/(?<=[.!?])\s+|\n+/)
-    .some((sentence) => COLLECTIVE.test(sentence) && STATUS_WORDS[status].test(sentence));
+    .some((sentence) => STATUS_WORDS[status].test(sentence) && (status === "unverified" || !NEGATED.test(sentence)));
 }
 
 /**

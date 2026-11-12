@@ -37,7 +37,7 @@ import {
   type ResultText,
 } from "./answerChecks";
 import { buildContext, type BuiltContext } from "./context";
-import { friendlyError } from "./errors";
+import { describeError, friendlyError } from "./errors";
 import { detectIntent } from "./intent";
 import { createRecheckTracker } from "./recheck";
 import { createStepPolicy, NO_ANSWER_TEXT, toolChoiceEnforcement, type CallRecord, type StepMode } from "./stepPolicy";
@@ -63,7 +63,7 @@ export interface AgentDeps {
   /** lib/clock.now in production; a fixed function in tests. */
   now: () => Date;
   /** Sleep and randomness for model retries; tests inject instant ones. */
-  retry?: Pick<RetryMiddlewareOptions, "sleep" | "rand">;
+  retry?: Pick<RetryMiddlewareOptions, "sleep" | "rand" | "firstChunkTimeoutMs">;
 }
 
 export interface AgentInput {
@@ -101,6 +101,8 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
   let totalMs: number | undefined;
   let usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number; steps?: number } = {};
   let retries = 0;
+  /** Class + status of the error that ended the turn, for the trace (never the message). */
+  let modelError: ReturnType<typeof describeError> | undefined;
   // A provider error part mid-stream does not make the SDK's outcome "failed", so it is remembered here.
   // Without it a half answer would be saved as complete and then written into memory (D45).
   let streamError: { error: unknown } | undefined;
@@ -241,7 +243,9 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
                 text:
                   reason === "rate-limit"
                     ? "Rate-limited by the model provider, retrying…"
-                    : "The model provider had an error, retrying…",
+                    : reason === "slow"
+                      ? "The model is slow to respond, retrying…"
+                      : "The model provider had an error, retrying…",
               },
               transient: true,
             });
@@ -363,7 +367,9 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
           .flatMap((p) => (p.type === "text" ? [p.text] : []))
           .join("");
         if (outcome.status === "failed" || streamError) {
-          const note = `⚠️ ${friendlyError(outcome.status === "failed" ? outcome.error : streamError?.error)}`;
+          const failure = outcome.status === "failed" ? outcome.error : streamError?.error;
+          modelError = describeError(failure);
+          const note = `⚠️ ${friendlyError(failure)}`;
           writeAssistant(text ? `${text}\n\n${note}` : note, "error", null);
         } else if (isAborted || isCancelled || outcome.status === "aborted") {
           writeAssistant(text, "partial", JSON.stringify(responseMessage.parts), responseMessage.parts);
@@ -381,6 +387,7 @@ export async function runAgent(deps: AgentDeps, input: AgentInput): Promise<Agen
   // Tracing runs after the reply is saved and never affects it (rule 5).
   const writeTrace = (): void => {
     const errors: unknown[] = ctx.error ? [ctx.error] : [];
+    if (modelError) errors.push({ modelError });
     // A takeaway that skips a non-Unchanged row contradicts its own table (D44); recorded, never "fixed" after the fact.
     const table = intent.verify && finished?.status === "complete" ? parseVerifyTable(finished.text) : undefined;
     const gaps = table ? takeawayGaps(table) : [];

@@ -696,7 +696,7 @@ announce). The static prompt stays byte-identical (rule 10); a verify turn that 
 fictional example (ExampleDB, Acme Analytics) was added, and the no-eval-vocabulary tests now cover the new text too. The wording
 is unchanged apart from the example; the recheck tracker's App note still names the date. *Not verified live:* that Flash-Lite
 still writes the list as well when the rules arrive in `<context>`; eval A4 and A20 are the check, to be run when quota allows.
-(4) *Prompt trim:* the static prompt went from 8,482 to 7,176 characters (about 2,120 to 1,790 tokens at 4 characters per token; 1,494
+(4) *Prompt trim (the dedup part was undone in D76; the move in (3) stands):* the static prompt went from 8,482 to 7,176 characters (about 2,120 to 1,790 tokens at 4 characters per token; 1,494
 to 1,265 words): 818 characters moved as in (3) and 488 were duplicates. Removed: the "every listed item needs its own query"
 sentence (said again in the next line), the "Domains from those claims" and "the app runs a second search" sentences (the dynamic
 block and the App note already say so), "A vendor pricing or product page's date is not the change date" (said in "Dates on results" and by
@@ -708,3 +708,37 @@ copy that stays. *Rejected:* shortening the status rules or the examples (they c
 database creation, a 400 on a malformed chat body (rejected by zod before any model call) and the proxy. No LLM or search calls.
 (6) `.gitignore` already covered `.env`, the SQLite files (`data/`, `*.db`, `*.db-*`), `eval/.tmp/` and `eval/transcripts-flash/`; a test
 now locks that in with `git check-ignore`.
+
+**D76 — Undo the D75 dedup, a status-based takeaway check, infra by error class, and a first-chunk timeout.** Evidence: after Phase 7a
+the A13 x3 + A18 x3 eval failed A13 on every attempt (4 of 4; it had passed 4 of 4 before). On the pricing page dated 11 Nov the model
+wrote "Changed after 2026-11-03" for Supabase and named only Supabase in the takeaway.
+(1) *Prompt.* Diffing `prompts.ts` at `de83822` (before 7a) against HEAD: the takeaway rule ("name every row whose status is not
+Unchanged", "Never say nothing changed…") and the "Changed after: ONLY when a source's own text reports the change…" rule were **not**
+removed in D75; they were in the prompt for every failing run. What D75 did remove, besides the three release paragraphs (moved to
+`RELEASE_LIST_RULES`, kept in `buildDynamicBlock`): (a) "A vendor pricing or product page's date is the page's date, not the change
+date." (inside the Changed-after bullet, the sentence closest to this failure), (b) "Every listed item needs its own search query; the
+app adds queries for items you leave out.", (c) "'Domains from those claims' … is a hint…; the app also runs one unrestricted query.",
+(d) "When the user asks what shipped…, the app runs a second search with since and no domains.", (e) "Square-bracket citations [n] are only
+for this turn's search results.", (f) "If there is no record of something, say so." All six are restored (a, b, e, f state rules; c and d
+describe the app, and are restored too so the only difference from the pre-7a prompt is the release paragraphs, which is the cleanest
+test). Static prompt: 8,482 (pre-7a) → 7,176 (D75) → **7,666** characters (about 2,120 → 1,794 → 1,917 tokens at 4 characters per
+token). A test pins each restored sentence. *Not verified live:* that this restores A13; the trim is the leading suspect, not a proven
+cause (a Flash-Lite run is noisy, and the one sentence that matters, (a), was a single line). If A13 still fails after a rerun, the
+next step is code, not prose: derive Changed/Differs from the evidence label (the DESIGN.md "code-assigned verdicts" item).
+(2) *Collective takeaway.* `collectiveTakeaway` no longer needs "all/every/none of": when two or more rows are not Unchanged, all share
+one status, and one sentence of the takeaway states that status in words, it passes whatever the wording ("couldn't verify current
+pricing for any of the shortlisted CRMs", "none could be verified", "unable to verify"). Differs/Changed/Outdated statements must not be
+negated ("nothing differs now" states no status). Mixed statuses still need each row named, and a single open row is still checked by
+name (one row is not a collective). *Rejected:* a longer phrase list (A18 run 3 showed it can never be complete).
+(3) *Infra by error class.* The trace now records `{ modelError: { name, status? } }` for the error that ended a turn (class and HTTP
+status only, never the message), and the eval reads it with `usage.retries`. An error turn is infra, rerun once, when its answer says
+5xx or rate limit, when the recorded error is a provider API error (not 401/403: a rejected key fails the same way again) or any 5xx or
+429, when the model stalled (4), or when the retry layer retried at all (`retries > 0`). A18 run 2 (3 retries, then "Something went
+wrong") was counted as a plain FAIL because the user-facing sentence hid the cause. No retries and no provider error stays a plain failure.
+(4) *First-chunk timeout (60 s).* `retryMiddleware.wrapStream` calls `model.doStream` itself with a per-attempt abort signal and races
+"first content part" (after the stream-start/metadata preamble) against 60 s. On a stall it rejects with `SlowResponseError`, aborts the
+request, and retries once with reason "slow" (logged, status line "The model is slow to respond, retrying…", counted in `usage.retries`); a
+second stall is final and reads "The model took too long to start answering." Once content has started there is no timeout and no retry
+(the existing rule: replaying text the user already saw is worse). It was not invasive: one middleware, no change to the agent loop. 60 s
+is above the ~48 s the answer step took at the provider's default thinking (see MAIN_THINKING_ANSWER in .env.example), so a slow but working call is not cut; A13 run 2's
+168 s stall would have cost 60 s plus one retry. Tests use a few milliseconds and fake streams that honour the abort signal.

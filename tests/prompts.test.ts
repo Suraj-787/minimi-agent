@@ -90,6 +90,31 @@ describe("release list (Phase 7a): only when the user asked about releases, news
   });
 });
 
+// D76: the D75 trim removed these and A13 went from 4/4 to 0/4 (Flash-Lite wrote "Changed after" from a pricing page's date).
+// They state rules, so they are pinned: only the release paragraphs may live outside the static prompt.
+describe("sentences the D75 trim removed, restored (D76)", () => {
+  it.each([
+    "A vendor pricing or product page's date is the page's date, not the change date.",
+    "Changed after <date>: ONLY when a source's own text reports the change AND that source is dated after the claim date",
+    "name every row whose status is not Unchanged, with its status",
+    "Never say nothing changed when any row is not Unchanged.",
+    "Every listed item needs its own search query; the app adds queries for items you leave out.",
+    '"Domains from those claims" in <context> is a hint for official pages, not a limit; the app also runs one unrestricted query.',
+    "When the user asks what shipped, launched or changed, the app runs a second search with since and no domains.",
+    "Square-bracket citations [n] are only for this turn's search results.",
+    "If there is no record of something, say so. If sources conflict, say so and give both.",
+  ])("static prompt contains: %s", (sentence) => {
+    expect(SYSTEM_PROMPT).toContain(sentence);
+  });
+
+  it("the only text that left the static prompt is the three release paragraphs, which live in RELEASE_LIST_RULES", () => {
+    expect(SYSTEM_PROMPT).not.toContain("Shipped since");
+    expect(RELEASE_LIST_RULES).toContain("Shipped since");
+    expect(SYSTEM_PROMPT.length).toBeGreaterThan(7600); // 8,482 before D75 minus the 818 characters that moved
+    expect(SYSTEM_PROMPT.length).toBeLessThan(7800);
+  });
+});
+
 describe("Phase 5 browser-test rules", () => {
   it("missing earlier content: say what has no record, ask for details, never substitute a generic search or invent", () => {
     expect(SYSTEM_PROMPT).toContain("# Missing earlier content");
@@ -152,6 +177,7 @@ describe("source order and shipped wording (D58)", () => {
   });
 
   it("D71: a vendor pricing page's date is not the change date; the exact Supabase example is in the prompt", () => {
+    expect(SYSTEM_PROMPT).toContain("A vendor pricing or product page's date is the page's date, not the change date");
     expect(SYSTEM_PROMPT).toContain("A page date alone never justifies Changed.");
     expect(SYSTEM_PROMPT).toContain(
       "Example: ExampleDB Pro $10 → $12 from exampledb.com/pricing dated 11 Nov, with the claim dated 3 Nov → Differs now (timing unknown).",

@@ -113,38 +113,60 @@ describe("Then → Now column (D71)", () => {
   });
 });
 
-describe("takeawayGaps: a collective takeaway (D74, A18)", () => {
+describe("takeawayGaps: a collective takeaway (D74, D76, A18)", () => {
   const HEAD = ["| Item | Said (date) | Then → Now | Status | Evidence date | Source |", "|---|---|---|---|---|---|"];
   const t = (rows: string[], after: string) => parseVerifyTable([...HEAD, ...rows, "", after].join("\n"))!;
-  const ALL_UNVERIFIED = ["HubSpot", "Pipedrive", "Salesforce", "Zoho", "Freshsales"].map((v) => `| ${v} | 2026-11-09 | $1 → — | Couldn't verify | — | — |`);
+  const row = (v: string, status: string) => `| ${v} | 2026-11-09 | $1 → — | ${status} | — | — |`;
+  const ALL_UNVERIFIED = ["HubSpot", "Pipedrive", "Salesforce", "Zoho", "Freshsales"].map((v) => row(v, "Couldn't verify"));
 
   it.each([
     "As of 12 November 2026, all items couldn't verify due to a lack of current pricing evidence.",
+    "As of 12 November 2026, couldn't verify current pricing for any of the shortlisted CRMs.", // A18 run 3
     "None of them could be verified as of 12 Nov.",
+    "As of 12 Nov, none could be verified.",
     "Every price could not be verified today.",
     "As of 12 Nov: all five are unverified.",
+    "I was unable to verify any of these prices as of 12 Nov.",
+    "Some couldn't be verified, as of 12 Nov.", // the status is stated; the wording around it does not matter
   ])("accepts: %s", (after) => {
     expect(collectiveTakeaway(t(ALL_UNVERIFIED, after))).toBe(true);
     expect(takeawayGaps(t(ALL_UNVERIFIED, after))).toEqual([]);
   });
 
-  it("the collective word and the status must be in the same sentence, and the status must be the rows' status", () => {
-    expect(takeawayGaps(t(ALL_UNVERIFIED, "All prices checked. Some couldn't be verified."))).toHaveLength(5);
+  it("accepts a shared Differs-now status stated without a collective word", () => {
+    const rows = [row("Neon", "Differs now (timing unknown)"), row("Render", "Differs now (timing unknown)")];
+    expect(takeawayGaps(t(rows, "As of 12 Nov, both prices differ now."))).toEqual([]);
+  });
+
+  it("the stated status must be the rows' status, and a negated sentence states nothing", () => {
     expect(takeawayGaps(t(ALL_UNVERIFIED, "All items differ now."))).toHaveLength(5);
     expect(takeawayGaps(t(ALL_UNVERIFIED, "Nothing to report."))).toHaveLength(5);
+    expect(takeawayGaps(t(ALL_UNVERIFIED, "All prices were checked."))).toHaveLength(5);
+    const differs = [row("Neon", "Differs now (timing unknown)"), row("Render", "Differs now (timing unknown)")];
+    expect(takeawayGaps(t(differs, "Nothing differs now."))).toHaveLength(2);
+    expect(takeawayGaps(t(differs, "Neither price changed."))).toHaveLength(2);
   });
 
   it("stays strict for mixed statuses: each non-Unchanged row must be named", () => {
     const mixed = t(
-      ["| Neon | 2026-11-03 | $19 → — | Couldn't verify | — | — |", "| Supabase | 2026-11-03 | $25 → $29 | Differs now (timing unknown) | 2026-11-11 | [1] |"],
+      [row("Neon", "Couldn't verify"), row("Supabase", "Differs now (timing unknown)")],
       "All items couldn't verify or differ now.",
     );
     expect(collectiveTakeaway(mixed)).toBe(false);
     expect(takeawayGaps(mixed)).toEqual(["Neon", "Supabase"]);
+    // The A13 takeaway: only Supabase named, Neon and Render are Couldn't verify.
+    const a13 = t([row("Neon", "Couldn't verify"), row("Supabase", "Differs now (timing unknown)"), row("Render", "Couldn't verify")], "As of 12 November 2026, Supabase changed: $25/month → $29/month [1].");
+    expect(takeawayGaps(a13)).toEqual(["Neon", "Render"]);
+  });
+
+  it("a single open row is checked by name, not as a collective", () => {
+    const one = t([row("Neon", "Unchanged"), row("Supabase", "Couldn't verify")], "Some prices couldn't be verified.");
+    expect(collectiveTakeaway(one)).toBe(false);
+    expect(takeawayGaps(one)).toEqual(["Supabase"]);
   });
 
   it("Unchanged rows don't count against a collective line", () => {
-    const tbl = t(["| Neon | 2026-11-03 | $19 → $19 | Unchanged | 2026-11-11 | [1] |", ...ALL_UNVERIFIED.slice(0, 2)], "All the others couldn't be verified.");
+    const tbl = t([row("Neon", "Unchanged"), ...ALL_UNVERIFIED.slice(0, 2)], "The others couldn't be verified.");
     expect(takeawayGaps(tbl)).toEqual([]);
   });
 });

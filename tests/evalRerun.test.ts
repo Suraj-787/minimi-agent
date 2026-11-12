@@ -60,6 +60,28 @@ describe("infraReasons", () => {
   });
 });
 
+describe("infraReasons: error turns whose message hides the cause (D76, A18 run 2)", () => {
+  const generic = "⚠️ Something went wrong while generating the answer. Try again.";
+  it("an error turn after retries is infra, whatever the final message says", () => {
+    expect(infraReasons([{ status: "error", answer: generic, retries: 3 }], [])).toEqual(["provider error after 3 retries"]);
+    expect(infraReasons([{ status: "error", answer: generic, retries: 1 }], [])).toEqual(["provider error after 1 retry"]);
+  });
+  it("a provider API error or any 5xx recorded in the trace is infra, even with no retries and a generic message", () => {
+    const e = (modelError: object) => [{ modelError }];
+    expect(infraReasons([{ status: "error", answer: generic, traceErrors: e({ name: "AI_APICallError" }) }], [])).toEqual(["provider API error"]);
+    expect(infraReasons([{ status: "error", answer: generic, traceErrors: e({ name: "Error", status: 502 }) }], [])).toEqual(["provider 5xx"]);
+    expect(infraReasons([{ status: "error", answer: generic, traceErrors: e({ name: "AI_APICallError", status: 429 }) }], [])).toEqual(["provider rate limit"]);
+    expect(infraReasons([{ status: "error", answer: generic, traceErrors: e({ name: "AI_APICallError", status: 400 }) }], [])).toEqual(["provider API error (HTTP 400)"]);
+  });
+  it("a rejected key, a missing key or an unexplained error with no retries stays a plain failure", () => {
+    const e = (modelError: object) => [{ modelError }];
+    expect(infraReasons([{ status: "error", answer: generic, traceErrors: e({ name: "AI_APICallError", status: 401 }) }], [])).toEqual([]);
+    expect(infraReasons([{ status: "error", answer: generic, traceErrors: e({ name: "AI_LoadAPIKeyError" }), retries: 0 }], [])).toEqual([]);
+    expect(infraReasons([{ status: "error", answer: generic, retries: 0 }], [])).toEqual([]);
+    expect(infraReasons([{ status: "complete", answer: "fine", retries: 2 }], [])).toEqual([]); // a retried turn that succeeded is fine
+  });
+});
+
 describe("runCase marks infra", () => {
   const deps = (main: ReturnType<typeof textModel>, small = smallOk()) => ({
     models: { main, small },
@@ -85,6 +107,24 @@ describe("runCase marks infra", () => {
     });
     const r = await runCase(deps(textModel(["Doing well, thanks!"]), smallDown as never), A6, 1);
     expect(r.infra?.[0]).toMatch(/memory write failed/);
+  });
+
+  it("a turn that failed after 3 retries with a status-less network error is infra (A18 run 2)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const net = new APICallError({ message: "fetch failed", url: "https://example.test", requestBodyValues: {}, isRetryable: true });
+    const flaky = flakyModel(textModel(["x"]), [net, net, net, net]);
+    const r = await runCase(deps(flaky.model as never), A6, 1);
+    expect(r.turns[0]).toMatchObject({ status: "error", retries: 3 });
+    expect(r.turns[0]?.answer).toContain("Something went wrong"); // the user-facing text hides the cause...
+    expect(r.infra?.[0]).toBe("provider API error"); // ...the trace does not
+    expect(r.passed).toBe(false);
+  });
+
+  it("a rejected key is not infra", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const r = await runCase(deps(flakyModel(textModel(["x"]), [err(401)]).model as never), A6, 1);
+    expect(r.turns[0]?.status).toBe("error");
+    expect(r.infra).toBeUndefined();
   });
 
   it("a clean run has no infra field", async () => {

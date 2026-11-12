@@ -8,8 +8,22 @@ export const MAX_RETRIES = 3;
 export const MAX_DELAY_MS = 20_000;
 const BASE_DELAY_MS = 1000;
 
+/**
+ * The model produced no content within the first-chunk limit (D76): a stall, not an error. The attempt is aborted and
+ * retried once (`retryable`); a second stall is final and reaches the user as an error.
+ */
+export class SlowResponseError extends Error {
+  constructor(
+    readonly limitMs: number,
+    readonly retryable: boolean,
+  ) {
+    super(`no content from the model within ${limitMs} ms`);
+    this.name = "SlowResponseError";
+  }
+}
+
 export type Verdict =
-  | { kind: "retry"; delayMs?: number; reason: "rate-limit" | "server" }
+  | { kind: "retry"; delayMs?: number; reason: "rate-limit" | "server" | "slow" }
   | { kind: "quota" }
   | { kind: "fatal" };
 
@@ -45,6 +59,7 @@ export function retryDelayHintMs(err: unknown): number | undefined {
 }
 
 export function classify(err: unknown): Verdict {
+  if (err instanceof SlowResponseError) return err.retryable ? { kind: "retry", reason: "slow" } : { kind: "fatal" };
   const e = apiErrorOf(err);
   if (!e) return { kind: "fatal" };
   const status = e.statusCode;
@@ -68,7 +83,7 @@ export function backoffMs(attempt: number, hintMs: number | undefined, rand: () 
 export interface RetryOptions {
   max?: number;
   /** Called before each wait; `attempt` is 1 for the first retry. */
-  onRetry?: (info: { attempt: number; delayMs: number; reason: "rate-limit" | "server" }) => void;
+  onRetry?: (info: { attempt: number; delayMs: number; reason: "rate-limit" | "server" | "slow" }) => void;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   rand?: () => number;
   signal?: AbortSignal;
