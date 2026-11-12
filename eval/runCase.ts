@@ -11,7 +11,7 @@ import type { Search, SearchInput } from "../src/search/index";
 import type { SearchResult } from "../src/search/types";
 import type { EvalCase, MockPage } from "./cases";
 import { runChecks, type CheckResult, type Observed, type TurnObservation } from "./checks";
-import { judgeCase, type Judgement, type JudgeMemory } from "./judge";
+import { judgeCase, JudgeTimeout, type Judgement, type JudgeMemory } from "./judge";
 import { describeMemory } from "../src/server/memoryRoutes";
 
 /** The day's model quota is gone: no later case can work either, so the whole run stops (D61). */
@@ -34,6 +34,8 @@ export interface CaseDeps {
   maxSteps: number;
   /** Sleep/jitter for model retries; tests pass instant ones. */
   retry?: AgentDeps["retry"];
+  /** Cap on one judge call (default 60 s, D78); tests pass a few milliseconds. */
+  judgeTimeoutMs?: number;
 }
 
 export interface TurnLog extends TurnObservation {
@@ -60,6 +62,8 @@ export interface RunResult {
   soft: CheckResult[];
   passed: boolean;
   judge: JudgeOutcome;
+  /** Wall time of the judge call, whatever its outcome (D78): tells a slow judge from a slow agent turn. */
+  judgeMs?: number;
   /** "mock": a fixture replaced the providers. "live": real search; "live (unused)": real search, never called. */
   searchMode: "mock" | "live" | "live (unused)";
   /**
@@ -263,6 +267,7 @@ export async function runCase(deps: CaseDeps, c: EvalCase, rep: number, attempt 
 
     const lastTurn = turns[turns.length - 1];
     let judge: JudgeOutcome;
+    const judgeStarted = performance.now();
     try {
       judge = await judgeCase(deps.models.small, {
         messages: c.messages,
@@ -272,12 +277,14 @@ export async function runCase(deps: CaseDeps, c: EvalCase, rep: number, attempt 
         memory: shown,
         now: c.now,
         mockedSearch: !!c.mockSearch,
-      });
+      }, deps.judgeTimeoutMs === undefined ? {} : { timeoutMs: deps.judgeTimeoutMs });
     } catch (err) {
       if (isDailyQuota(err)) throw new QuotaExhausted(`${c.id} judge (run ${rep})`);
       // Only the error class: provider messages can carry request details (no secrets in output).
-      judge = { error: err instanceof Error ? err.name : "unknown error" };
+      // A timeout is a plain "timeout": informational like any judge error, never a failed check.
+      judge = { error: err instanceof JudgeTimeout ? "timeout" : err instanceof Error ? err.name : "unknown error" };
     }
+    const judgeMs = Math.round(performance.now() - judgeStarted);
 
     const searched = turns.some((t) => t.searchCalls > 0);
     const infra = infraReasons(turns, observed.writes);
@@ -289,6 +296,7 @@ export async function runCase(deps: CaseDeps, c: EvalCase, rep: number, attempt 
       soft,
       passed: hard.every((h) => h.pass),
       judge,
+      judgeMs,
       searchMode: c.mockSearch ? "mock" : searched ? "live" : "live (unused)",
       ...(infra.length > 0 ? { infra } : {}),
       ...(resolvedMain || ("modelId" in judge && judge.modelId)

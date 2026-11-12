@@ -75,15 +75,44 @@ export function toJudgement(raw: z.infer<typeof judgeSchema>): Judgement {
   return { score: score as Judgement["score"], reason: raw.reason.trim().slice(0, 400) };
 }
 
+/** One judge call may take this long, retries included (D78). A17 run 2 spent 515 s on a judge that kept failing. */
+export const JUDGE_TIMEOUT_MS = 60_000;
+
+/** The judge did not answer in time. Recorded as `judge error: timeout`; never a check result. */
+export class JudgeTimeout extends Error {
+  constructor(readonly limitMs: number) {
+    super(`judge call exceeded ${limitMs} ms`);
+    this.name = "JudgeTimeout";
+  }
+}
+
 export async function judgeCase(model: LanguageModel, input: JudgeInput, opts: { timeoutMs?: number } = {}): Promise<Judgement> {
-  const result = await generateText({
+  const limitMs = opts.timeoutMs ?? JUDGE_TIMEOUT_MS;
+  // The deadline is a race, not only an abort signal: the SDK's retries and provider backoff can outlive a signal
+  // (515 s observed), and a stalled stream may ignore it. The abort still cancels the request where it is honoured.
+  const ctl = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new JudgeTimeout(limitMs));
+      ctl.abort();
+    }, limitMs);
+  });
+  const call = generateText({
     model,
     instructions: JUDGE_INSTRUCTIONS,
     prompt: buildJudgePrompt(input),
     output: Output.object({ schema: judgeSchema, name: "eval_judgement" }),
     maxRetries: 2,
-    abortSignal: AbortSignal.timeout(opts.timeoutMs ?? 45_000),
+    abortSignal: ctl.signal,
   });
-  const modelId = result.response?.modelId;
-  return { ...toJudgement(result.output), ...(modelId ? { modelId } : {}) };
+  // The abandoned call fails after the abort; nobody is waiting for it.
+  call.catch(() => undefined);
+  try {
+    const result = await Promise.race([call, deadline]);
+    const modelId = result.response?.modelId;
+    return { ...toJudgement(result.output), ...(modelId ? { modelId } : {}) };
+  } finally {
+    clearTimeout(timer);
+  }
 }

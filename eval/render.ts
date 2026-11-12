@@ -208,7 +208,8 @@ export function renderTranscript(c: EvalCase, runs: RunResult[], meta: RunMeta):
       if (steps.length) lines.push("", ...steps);
     }
     lines.push("", "Checks:", ...r.hard.map(checkLine), ...r.soft.map((s) => checkLine({ ...s, name: `(soft) ${s.name}` })));
-    lines.push("", "score" in r.judge ? `Judge: ${r.judge.score}/5 — ${r.judge.reason}` : `Judge: error (${r.judge.error})`);
+    const took = r.judgeMs === undefined ? "" : ` [${ms(r.judgeMs)}]`;
+    lines.push("", "score" in r.judge ? `Judge: ${r.judge.score}/5 — ${r.judge.reason}${took}` : `Judge: error (${r.judge.error})${took}`);
   };
   for (const r of runs) {
     if (r.firstAttempt) {

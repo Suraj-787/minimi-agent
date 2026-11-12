@@ -35,6 +35,7 @@ const baseRun = z.object({
   soft: z.array(check),
   passed: z.boolean(),
   judge: z.union([z.object({ score: z.number(), reason: z.string(), modelId: z.string().optional() }), z.object({ error: z.string() })]),
+  judgeMs: z.number().optional(),
   searchMode: z.enum(["mock", "live", "live (unused)"]),
   resolved: z.object({ main: z.string().optional(), small: z.string().optional() }).optional(),
   infra: z.array(z.string()).optional(),

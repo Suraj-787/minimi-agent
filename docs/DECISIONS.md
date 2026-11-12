@@ -767,3 +767,14 @@ why? drawer as "Status the evidence didn't allow"; like the other checks it neve
 *Not verified live:* that Flash-Lite obeys the line; the A13 rerun is the test. If it still writes a disallowed status, the next step is
 to rewrite that cell in code, which is why the entry records the allowed set. *Rejected:* a hard rewrite now (the user would see a status
 the model did not write); putting the lines in the static prompt (they are per turn, rule 10).
+
+**D78 — Each eval judge call is capped at 60 s and its time is recorded.** Evidence: A17 run 2 took 515 s and showed "judge err" although the
+agent turn itself took 60 s. The judge had only an `AbortSignal.timeout(45 s)`; the SDK's own retries (`maxRetries: 2`) and the provider's
+backoff can outlive a signal, and a stalled stream may ignore it, so the cap did not hold. `judgeCase` now races the call against a 60 s
+timer (`JUDGE_TIMEOUT_MS`) and aborts the request when the timer fires; the abandoned call's late rejection is swallowed. A timeout is
+stored as `judge: { error: "timeout" }`, which `results.md` already shows as `judge error` / `err`. The judge stays informational (D60):
+a timeout never fails the case, never counts as infra (no rerun, D70) and never stops the run; only a daily-quota error still does (D61).
+Every run now stores `judgeMs`, the wall time of its judge call whatever the outcome, and the transcript prints it next to the score
+(`Judge: error (timeout) [60.0 s]`), so a slow judge can be told apart from a slow agent turn. Optional in the stored schema, so results
+saved before this change still load. *Rejected:* retrying the judge after a timeout (the cap is meant to bound wall time per case);
+lowering `maxRetries` (the race already bounds the total, and a quick 429 retry is still useful inside it).
