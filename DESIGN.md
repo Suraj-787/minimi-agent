@@ -20,7 +20,9 @@ Changed after, Already outdated when asked, Couldn't verify). That table decides
   rules (D71, D76). The closing message now lists each item's allowed statuses, computed from its evidence.
 
 ## Considered and rejected
-LLM-decided memory updates · a knowledge graph · an always-on profile · a memory tool · multi-agent · LangChain · vector-only memory.
+LLM-decided memory updates (extra call per write, probabilistic) · a knowledge graph (too heavy for `npm install`) · an always-on
+profile (over-application, privacy) · a memory tool (breaks one-tool rule, extra round-trip) · multi-agent (slower, more quota,
+harder to debug) · LangChain (layers around one loop) · vector-only memory (dates need exact lookup).
 
 ## Results
 20 cases, one run each; hard checks decide pass/fail, the judge is informational. Full runs: 14/20 (11 Nov), then 20/20 and 18/20
