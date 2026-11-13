@@ -548,6 +548,7 @@ time per forced search step (D65 had left it at the provider default). (4) `.env
 (what an alias like `-latest` resolved to) is kept: per step in the trace (`usage.resolvedModel`), per run in the stored result, and
 shown in results.md and the transcripts as `requested → resolved` for both the main model and the judge. Providers that do not
 report one show just the requested id.
+Correction, 13 Nov 2026: Flash works on the free tier at 5 requests/min and 20/day; it does not need a billed key. The default stays Flash-Lite because Flash's limits are too small for a verify turn.
 
 ## Phase 6 — after the third eval run
 

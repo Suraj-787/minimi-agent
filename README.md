@@ -40,7 +40,7 @@ Everything lives in `.env` (see [.env.example](./.env.example)). Blank means "us
 | `DEV_LLM_CACHE` | `0` | `1` caches model answers on disk to save quota while developing. Ignored under `NODE_ENV=production` and never used by evals. |
 
 ## Quota: read this before you demo
-`.env.example` defaults both models to **Gemini Flash-Lite**, because **Flash needs a billed key**. Free-tier limits as of 2026-11-11:
+`.env.example` defaults both models to **Gemini Flash-Lite**. Flash works on the free tier, but only at **5 requests/min and 20/day**, which a single verify turn (3–4 model requests, plus any retries) can use up within a minute. Free-tier limits as of 2026-11-11:
 
 | Model | Requests/min | Requests/day |
 |---|---|---|
@@ -50,7 +50,7 @@ Everything lives in `.env` (see [.env.example](./.env.example)). Blank means "us
 - A **verify turn** ("is that still correct?") uses about **3-4 model requests** (one or two search steps, the answer, and the
   background memory write) and roughly **6-12 search requests** (one per re-checked item on the vendor's own site and one
   unrestricted, plus the news pass when you ask what shipped). A plain question uses about 2 model requests (the answer and the memory write).
-- On Flash's 20/day that is about 5 verify turns. Use Flash-Lite unless you have billing.
+- On Flash's 20/day that is about 5 verify turns, and its 5/min means a verify turn can hit the per-minute limit. Use Flash-Lite for demos.
 - **Search cache.** Results are cached in SQLite for 1 hour (queries with `since` or news words such as "latest") or 24 hours (the rest).
   Verify-mode searches use `fresh: true`, which skips that cache and keeps its result for only 2 minutes, so a retry right after a
   failed turn does not repeat every live crawl. The cache therefore saves quota on ordinary questions and repeated demos,

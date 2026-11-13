@@ -33,7 +33,7 @@ const providerKeyVar: Record<Provider, string> = {
 };
 
 // Gemini ids are only a sane default for Gemini; other providers must name their models.
-// Flash-Lite for both: Flash needs a billed key (free tier: Flash 5 requests/min and 20/day, Flash-Lite 15/min and 500/day, 2026-11-11).
+// Flash-Lite for both: Flash works on the free tier but runs out quickly (free tier: Flash 5 requests/min and 20/day, Flash-Lite 15/min and 500/day, 2026-11-11).
 const GOOGLE_DEFAULTS = { main: "gemini-flash-lite-latest", small: "gemini-flash-lite-latest" };
 
 // default | minimal | low | medium | high | a token budget. Only the Google provider uses it (agent/thinking.ts).
